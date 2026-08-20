@@ -1,0 +1,7 @@
+appId: com.ecat.test
+productName: ECAT Test
+files:
+  - electron/**
+  - src/dm3c_ecat/web/**
+  - package.json
+asar: true

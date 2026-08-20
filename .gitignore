@@ -1,0 +1,19 @@
+# Python generated files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Node/Electron dependencies and build output
+node_modules/
+dist/
+release/
+out/
+
+# Local runtime output
+logs/*.log*
+
+# Local environment overrides
+.env
+.env.*
+!.env.example

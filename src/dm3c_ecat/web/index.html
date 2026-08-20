@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ECAT Test · EtherCAT 测试</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <!-- 状态栏 -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">EC</div>
+        <div class="brand-text">
+          <strong>ECAT TEST</strong>
+          <span>控制台</span>
+        </div>
+      </div>
+      <div class="side-note">
+        <span class="side-note-label">本地会话</span>
+        <span>控制链路仅限本机</span>
+      </div>
+      <div class="sidebar-foot">
+        <span class="conn-dot" id="connDot" data-state="off"></span>
+        <span><b id="connLabel" class="conn-label">未连接</b><small> EtherCAT 链路</small></span>
+      </div>
+    </aside>
+
+    <!-- 主区 -->
+    <div class="main">
+      <header class="topbar">
+        <div>
+          <span class="topbar-kicker">ECAT TEST / 操作控制台</span>
+          <h1>手动控制</h1>
+          <p class="topbar-sub">PV 点动或 PP 点位运行</p>
+        </div>
+        <div class="topbar-right">
+          <div class="topbar-status"><span class="status-pulse"></span><span>实时链路</span></div>
+          <span class="state-pill" id="statePill" data-state="idle">启动中</span>
+        </div>
+      </header>
+
+      <main class="content">
+        <section class="page control-page">
+          <div class="grid-2">
+            <!-- 使能 + 参数 -->
+            <div class="card">
+              <div class="card-head">
+                <h2>驱动使能</h2>
+                <label class="switch">
+                  <input type="checkbox" id="enableSwitch" disabled>
+                  <span class="switch-track"><span class="switch-thumb"></span></span>
+                </label>
+              </div>
+              <div class="card-body">
+                <div class="metric-row"><span>使能状态</span><strong id="enableState" class="mono">未使能</strong></div>
+                <hr class="sep">
+                <div class="mode-switch" id="modeSwitch" role="group" aria-label="运动模式">
+                  <button class="mode-option is-active" id="modePv" type="button" data-mode="pv" aria-pressed="true">PV 点动</button>
+                  <button class="mode-option" id="modePp" type="button" data-mode="pp" aria-pressed="false">PP 点位</button>
+                </div>
+                <p class="hint" id="modeHint">未使能时可切换运行模式。</p>
+                <div id="pvSettings" class="mode-settings">
+                  <label class="field-label" for="velocity">目标速度（驱动单位）</label>
+                  <input class="text-input" id="velocity" type="number" min="1" max="100000" value="1000" inputmode="numeric">
+                  <div class="field-2">
+                    <div>
+                      <label class="field-label" for="accel">加速时间（秒）</label>
+                      <input class="text-input" id="accel" type="number" min="0.01" max="60" step="0.01" value="0.5">
+                    </div>
+                    <div>
+                      <label class="field-label" for="decel">减速时间（秒）</label>
+                      <input class="text-input" id="decel" type="number" min="0.01" max="60" step="0.01" value="0.5">
+                    </div>
+                  </div>
+                  <p class="hint">加速/减速为 0 速↔目标速度的设定时间。</p>
+                </div>
+                <div id="ppSettings" class="mode-settings" hidden>
+                  <label class="field-label" for="ppTarget">目标位置（驱动脉冲）</label>
+                  <input class="text-input" id="ppTarget" type="number" min="-2147483648" max="2147483647" step="1" value="1000" inputmode="numeric">
+                  <div class="field-2">
+                    <div>
+                      <label class="field-label" for="ppVelocity">轮廓速度</label>
+                      <input class="text-input" id="ppVelocity" type="number" min="1" max="100000" step="1" value="1000" inputmode="numeric">
+                    </div>
+                    <div>
+                      <label class="field-label" for="ppAccel">轮廓加速度</label>
+                      <input class="text-input" id="ppAccel" type="number" min="1" max="10000000" step="1" value="1000" inputmode="numeric">
+                    </div>
+                  </div>
+                  <label class="field-label" for="ppDecel">轮廓减速度</label>
+                  <input class="text-input" id="ppDecel" type="number" min="1" max="10000000" step="1" value="1000" inputmode="numeric">
+                  <div class="position-mode" role="group" aria-label="位置类型">
+                    <label class="position-option"><input type="radio" name="ppPositionMode" value="absolute" checked><span>绝对位置</span></label>
+                    <label class="position-option"><input type="radio" name="ppPositionMode" value="relative"><span>相对位移（正负方向）</span></label>
+                  </div>
+                  <p class="hint" id="ppModeHint">绝对位置：目标是坐标值，方向由当前位置和目标坐标比较决定。</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- 点动按钮 -->
+            <div class="card jog-card">
+              <div class="card-head"><h2>手动点动</h2></div>
+              <div class="card-body">
+                <div id="pvControls">
+                  <div class="jog-grid">
+                    <button class="jog-btn jog-fwd" id="jogFwd" disabled>
+                      <span class="jog-dir">正转</span>
+                      <span class="jog-sub">正向 · 按住运行</span>
+                    </button>
+                    <button class="jog-btn jog-rev" id="jogRev" disabled>
+                      <span class="jog-dir">反转</span>
+                      <span class="jog-sub">反向 · 按住运行</span>
+                    </button>
+                  </div>
+                  <p class="hint center" id="jogHint">请先打开驱动使能</p>
+                </div>
+                <div id="ppControls" class="pp-controls" hidden>
+                  <div class="position-readout">
+                    <div><span>当前位置</span><strong id="actualPosition">0</strong></div>
+                    <div><span>目标位置</span><strong id="targetPosition">0</strong></div>
+                  </div>
+                  <button class="move-btn" id="movePp" disabled>
+                    <span>执行定位</span>
+                    <small>发送一个 PP 目标</small>
+                  </button>
+                  <p class="hint center" id="ppHint">请先打开驱动使能</p>
+                </div>
+                <button class="stop-btn" id="stopBtn">⏹ 停止运动</button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

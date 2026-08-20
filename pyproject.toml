@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ecat-test"
+version = "0.1.0"
+description = "EtherCAT validation and Jog test tools"
+requires-python = ">=3.12"
+dependencies = ["pysoem==1.1.13", "websockets>=14,<16"]
+
+[project.scripts]
+ecat-hmi = "dm3c_ecat.hmi:main"
+ecat-electron-backend = "dm3c_ecat.websocket_hmi:main"
+ecat-probe = "dm3c_ecat.probe:main"
+ecat-jog = "dm3c_ecat.jog:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
