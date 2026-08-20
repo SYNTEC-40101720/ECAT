@@ -97,6 +97,10 @@ class WebSocketHmi:
             self.runtime.set_ramp_times(
                 float(command["acceleration"]), float(command["deceleration"])
             )
+        elif name == "set_output":
+            self.runtime.set_digital_output(
+                int(command["channel"]), command["enabled"]
+            )
         else:
             raise ValueError(f"unknown command: {name}")
         return {"type": "ack", "command": name, "accepted": True}

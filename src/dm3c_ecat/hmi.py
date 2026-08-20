@@ -13,7 +13,12 @@ from urllib.parse import urlparse
 
 import pysoem
 
-from .device_profiles import enumerate_adapters, get_drive_profile, resolve_default_interface
+from .device_profiles import (
+    enumerate_adapters,
+    get_drive_profile,
+    get_remote_io_profile,
+    resolve_default_interface,
+)
 from .logging_setup import DEFAULT_LOG_FILE, configure_logging
 from .motion_modes import (
     MODE_CSP,
@@ -136,7 +141,12 @@ class Runtime:
         self.interface = interface
         self.master = pysoem.Master()
         self.slave = None
+        self.drive_slave = None
+        self.io_slave = None
         self.profile = None
+        self.io_profile = None
+        self.io_input_mask = 0
+        self.io_output_mask = 0
         self.mode_capability_word: int | None = None
         self.lock = threading.Lock()
         self.running = bool(interface)
@@ -223,8 +233,11 @@ class Runtime:
                 or self.homing_active
                 or self.csp_move_pending
                 or self.csp_move_active
+                or self.io_output_mask
             ):
-                raise RuntimeError("disable the drive before changing interface")
+                raise RuntimeError(
+                    "disable the drive or clear outputs before changing interface"
+                )
             same_active_interface = (
                 self.interface == selected and self.thread.is_alive()
             )
@@ -238,7 +251,12 @@ class Runtime:
             self.master = pysoem.Master()
             self.interface = selected
             self.slave = None
+            self.drive_slave = None
+            self.io_slave = None
             self.profile = None
+            self.io_profile = None
+            self.io_input_mask = 0
+            self.io_output_mask = 0
             self.mode_capability_word = None
             self.running = False
             self.state = "STARTING"
@@ -321,6 +339,8 @@ class Runtime:
         acceleration_time: float | None = None,
         deceleration_time: float | None = None,
     ) -> None:
+        if self.profile is None:
+            raise RuntimeError("no drive is connected for motion commands")
         if abs(velocity) > MAX_VELOCITY:
             raise ValueError(f"velocity limit is {MAX_VELOCITY}")
         if acceleration_time is not None or deceleration_time is not None:
@@ -343,6 +363,8 @@ class Runtime:
                 self.last_logged_command = velocity
 
     def set_mode(self, mode: str) -> None:
+        if self.io_profile is not None and self.profile is None:
+            raise RuntimeError("digital I/O device has no motion modes")
         if mode not in MOTION_MODES:
             raise ValueError(f"unsupported motion mode: {mode}")
         with self.lock:
@@ -379,6 +401,8 @@ class Runtime:
         deceleration_time: float,
         relative: bool = False,
     ) -> None:
+        if self.io_profile is not None and self.profile is None:
+            raise RuntimeError("digital I/O device has no motion commands")
         if not MIN_POSITION <= target_position <= MAX_POSITION:
             raise ValueError(f"target position must be {MIN_POSITION}..{MAX_POSITION}")
         if not 1 <= velocity <= MAX_VELOCITY:
@@ -427,6 +451,8 @@ class Runtime:
         acceleration_time: float,
         offset: int = 0,
     ) -> None:
+        if self.io_profile is not None and self.profile is None:
+            raise RuntimeError("digital I/O device has no motion commands")
         if not -128 <= method <= 127:
             raise ValueError("homing method must be -128..127")
         if not 1 <= fast_velocity <= MAX_VELOCITY:
@@ -480,6 +506,8 @@ class Runtime:
                 self.homing_heartbeat = time.monotonic()
 
     def move_csp(self, target_position: int, duration: float) -> None:
+        if self.io_profile is not None and self.profile is None:
+            raise RuntimeError("digital I/O device has no motion commands")
         if not MIN_POSITION <= target_position <= MAX_POSITION:
             raise ValueError(f"target position must be {MIN_POSITION}..{MAX_POSITION}")
         self._validate_ramp_time(duration, "CSP move time")
@@ -530,6 +558,8 @@ class Runtime:
         with self.lock:
             if not self.interface:
                 raise RuntimeError("select an EtherCAT adapter first")
+            if self.profile is None:
+                raise RuntimeError("no drive is connected for drive enable")
             if self.state == "ERROR":
                 raise RuntimeError("drive runtime is in ERROR state")
             self.enable_requested = True
@@ -565,9 +595,14 @@ class Runtime:
             self.csp_start_position = self.actual_position
             self.csp_started_at = 0
             self.csp_heartbeat = 0
+            outputs_were_set = self.io_output_mask != 0
+            if self.io_profile is not None:
+                self.io_output_mask = 0
             if had_motion or self.last_logged_command != 0:
                 LOGGER.info("Motion stopped; enable state preserved")
                 self.last_logged_command = 0
+            if outputs_were_set:
+                LOGGER.info("Digital outputs cleared")
 
     def disable(self) -> None:
         with self.lock:
@@ -595,6 +630,168 @@ class Runtime:
     def stop(self) -> None:
         self.disable()
 
+        with self.lock:
+            if self.io_profile is not None:
+                self.io_output_mask = 0
+                self.message = "Digital outputs cleared"
+
+    def set_digital_output(self, channel: int, enabled: bool) -> None:
+        if not isinstance(channel, int):
+            raise ValueError("digital output channel must be an integer")
+        if not isinstance(enabled, bool):
+            raise ValueError("digital output value must be boolean")
+        with self.lock:
+            if self.io_profile is None:
+                raise RuntimeError("digital I/O device is not connected")
+            if not 0 <= channel < self.io_profile.output_channels:
+                raise ValueError(
+                    f"digital output channel must be 0..{self.io_profile.output_channels - 1}"
+                )
+            if self.state not in {
+                "OPERATIONAL",
+                "ENABLED",
+                "JOGGING",
+                "PP_MOVING",
+                "HOMING",
+                "CSP_MOVING",
+            }:
+                raise RuntimeError("digital I/O is not operational")
+            bit = 1 << channel
+            self.io_output_mask = (
+                self.io_output_mask | bit
+                if enabled
+                else self.io_output_mask & ~bit
+            )
+            LOGGER.info(
+                "Digital output changed: channel=%02d enabled=%s mask=0x%04X",
+                channel,
+                enabled,
+                self.io_output_mask,
+            )
+
+    def _drive_device(self):
+        return self.drive_slave or (
+            self.slave if self.profile is not None else None
+        )
+
+    def _io_device(self):
+        return self.io_slave or (
+            self.slave if self.io_profile is not None else None
+        )
+
+    def _expected_process_image_size(self, drive_rx_bytes: int | None = None) -> int:
+        total = 0
+        if self.profile is not None:
+            selected_rx_bytes = drive_rx_bytes
+            if selected_rx_bytes is None:
+                mode_pdo = self.profile.mode_pdo(self.motion_mode)
+                selected_rx_bytes = (
+                    mode_pdo.rx_bytes if mode_pdo is not None else self.profile.rx_bytes
+                )
+            total += selected_rx_bytes + self.profile.tx_bytes
+        if self.io_profile is not None:
+            total += self.io_profile.io_map_bytes
+        return total
+
+    def _write_io_output(self) -> None:
+        io_slave = self._io_device()
+        if self.io_profile is None or io_slave is None:
+            return
+        with self.lock:
+            output_mask = self.io_output_mask
+        io_slave.output = output_mask.to_bytes(self.io_profile.rx_bytes, "little")
+
+    def io_cycle(self) -> int:
+        if self.io_profile is None or self._io_device() is None:
+            raise RuntimeError("digital I/O process data is not configured")
+        self._write_io_output()
+        if self.profile is not None:
+            self.master.send_overlap_processdata()
+        else:
+            self.master.send_processdata()
+        return self.master.receive_processdata(CYCLE_US)
+
+    def read_io_inputs(self) -> int:
+        io_slave = self._io_device()
+        if self.io_profile is None or io_slave is None:
+            raise RuntimeError("digital I/O process data is not configured")
+        input_mask = int.from_bytes(
+            bytes(io_slave.input[: self.io_profile.tx_bytes]), "little"
+        )
+        input_mask &= (1 << self.io_profile.input_channels) - 1
+        with self.lock:
+            self.io_input_mask = input_mask
+        return input_mask
+
+    def configure_io_process_data(self) -> None:
+        io_slave = self._io_device()
+        if self.io_profile is None or io_slave is None:
+            raise RuntimeError("digital I/O profile is not available")
+        io_map_size = (
+            self.master.config_overlap_map()
+            if self.profile is not None
+            else self.master.config_map()
+        )
+        self._validate_io_process_data()
+        if io_map_size != self._expected_process_image_size():
+            raise RuntimeError(
+                f"unexpected digital I/O process image size: {io_map_size} "
+                f"(expected {self._expected_process_image_size()})"
+            )
+        with self.lock:
+            self.io_input_mask = 0
+            self.io_output_mask = 0
+        self.expected_wkc = self.master.expected_wkc
+        LOGGER.info(
+            "Digital I/O PDO configured: device=%s rx_pdo=0x%04X tx_pdo=0x%04X "
+            "io_map=%s bytes expected_wkc=%s",
+            self.io_profile.name,
+            self.io_profile.rx_pdo,
+            self.io_profile.tx_pdo,
+            io_map_size,
+            self.expected_wkc,
+        )
+
+    def _validate_io_process_data(self) -> None:
+        io_slave = self._io_device()
+        if self.io_profile is None or io_slave is None:
+            raise RuntimeError("digital I/O profile is not available")
+        actual_sizes = (len(io_slave.output), len(io_slave.input))
+        expected_sizes = (self.io_profile.rx_bytes, self.io_profile.tx_bytes)
+        if actual_sizes != expected_sizes:
+            raise RuntimeError(
+                f"{self.io_profile.name} expected Rx/Tx bytes "
+                f"{expected_sizes[0]}/{expected_sizes[1]}, "
+                f"got {actual_sizes[0]}/{actual_sizes[1]}"
+            )
+
+    def run_io_loop(self) -> None:
+        while self.running:
+            self.wkc = self.io_cycle()
+            self.read_io_inputs()
+            if self.wkc <= 0:
+                with self.lock:
+                    self.io_output_mask = 0
+                    self.state = "ERROR"
+                    self.message = (
+                        f"Process-data WKC mismatch: {self.wkc}/{self.expected_wkc}"
+                    )
+                LOGGER.error(
+                    "Digital I/O WKC mismatch: actual=%s expected=%s",
+                    self.wkc,
+                    self.expected_wkc,
+                )
+            else:
+                with self.lock:
+                    if self.state != "ERROR":
+                        self.state = "OPERATIONAL"
+                        self.message = (
+                            "Digital I/O ready"
+                            if self.wkc == self.expected_wkc
+                            else f"Digital I/O ready; partial WKC {self.wkc}/{self.expected_wkc}"
+                        )
+            time.sleep(CYCLE_US / 1_000_000)
+
     def snapshot(self) -> dict[str, object]:
         with self.lock:
             available_modes = self.available_modes()
@@ -611,20 +808,46 @@ class Runtime:
                 or self.csp_move_pending
                 or self.csp_move_active
             )
+            has_drive = self.profile is not None
+            has_digital_io = self.io_profile is not None
+            device_names = [
+                device.name
+                for device in (self.profile, self.io_profile)
+                if device is not None
+            ]
+            device_name = " + ".join(device_names)
+            device_type = (
+                "mixed"
+                if has_drive and has_digital_io
+                else "digital_io"
+                if has_digital_io
+                else "drive"
+                if has_drive
+                else ""
+            )
+            connected_states = {
+                "OPERATIONAL",
+                "ENABLED",
+                "JOGGING",
+                "PP_MOVING",
+                "HOMING",
+                "CSP_MOVING",
+            }
             return {
                 "state": self.state,
                 "message": self.message,
                 "interface": self.interface,
-                "device": self.profile.name if self.profile else "",
+                "device": device_name,
+                "deviceType": device_type,
+                "devices": device_names,
+                "hasDrive": has_drive,
+                "hasDigitalIo": has_digital_io,
+                "driveDevice": self.profile.name if self.profile else "",
+                "ioDevice": self.io_profile.name if self.io_profile else "",
+                "driveConnected": has_drive and self.state in connected_states,
+                "ioConnected": has_digital_io and self.state in connected_states,
                 "connected": self.state
-                in {
-                    "OPERATIONAL",
-                    "ENABLED",
-                    "JOGGING",
-                    "PP_MOVING",
-                    "HOMING",
-                    "CSP_MOVING",
-                },
+                in connected_states,
                 "enabled": self.enabled,
                 "enableRequested": self.enable_requested,
                 "motionMode": self.motion_mode,
@@ -651,6 +874,10 @@ class Runtime:
                 "mode": self.mode,
                 "wkc": self.wkc,
                 "expectedWkc": self.expected_wkc,
+                "ioInputMask": self.io_input_mask,
+                "ioOutputMask": self.io_output_mask,
+                "ioInputChannels": self.io_profile.input_channels if has_digital_io else 0,
+                "ioOutputChannels": self.io_profile.output_channels if has_digital_io else 0,
             }
 
     def _next_csp_target(self) -> int:
@@ -675,6 +902,9 @@ class Runtime:
             return target
 
     def cycle(self, controlword: int, velocity: int = 0) -> int:
+        drive_slave = self._drive_device()
+        if self.profile is None or drive_slave is None:
+            raise RuntimeError("drive process data is not configured")
         mode = self.motion_mode
         mode_pdo = self.profile.mode_pdo(mode) if self.profile else None
         packet_kind = mode_pdo.packet_kind if mode_pdo else "velocity"
@@ -685,7 +915,7 @@ class Runtime:
                 profile_velocity = self.pp_profile_velocity
                 acceleration = self.pp_acceleration
                 deceleration = self.pp_deceleration
-            self.slave.output = pp_packet(
+            drive_slave.output = pp_packet(
                 controlword,
                 target_position,
                 profile_velocity,
@@ -696,7 +926,7 @@ class Runtime:
         elif packet_kind == "velocity":
             ramp_velocity = velocity or self.last_target_velocity
             acceleration, deceleration = self.ramp_values(ramp_velocity)
-            self.slave.output = packet(
+            drive_slave.output = packet(
                 controlword, velocity, acceleration, deceleration, mode_value
             )
         elif packet_kind == "homing":
@@ -713,7 +943,7 @@ class Runtime:
                 homing_active = self.homing_active
             if homing_active:
                 controlword |= HOMING_START
-            self.slave.output = homing_packet(
+            drive_slave.output = homing_packet(
                 controlword,
                 method,
                 fast_velocity,
@@ -726,7 +956,7 @@ class Runtime:
             target_position = self._next_csp_target()
             mode_in_pdo = mode_pdo.mode_in_pdo if mode_pdo else True
             target_velocity_in_pdo = mode_pdo.target_velocity_in_pdo if mode_pdo else False
-            self.slave.output = csp_packet(
+            drive_slave.output = csp_packet(
                 controlword,
                 target_position,
                 mode=mode_value,
@@ -735,11 +965,15 @@ class Runtime:
             )
         else:
             raise RuntimeError(f"no packet encoder for {mode.upper()} mode")
+        self._write_io_output()
         self.master.send_overlap_processdata()
         return self.master.receive_processdata(CYCLE_US)
 
     def feedback(self) -> None:
-        data = bytes(self.slave.input)
+        drive_slave = self._drive_device()
+        if drive_slave is None:
+            return
+        data = bytes(drive_slave.input)
         if len(data) >= 5:
             self.error = int.from_bytes(data[0:2], "little")
             self.statusword = int.from_bytes(data[2:4], "little")
@@ -778,7 +1012,7 @@ class Runtime:
 
     def available_modes(self) -> tuple[str, ...]:
         if self.profile is None:
-            return MOTION_MODES
+            return () if self.io_profile is not None else MOTION_MODES
         if self.mode_capability_word is None:
             return self.profile.supported_modes
         return modes_from_capability_word(
@@ -787,10 +1021,11 @@ class Runtime:
         )
 
     def _read_mode_capabilities(self) -> None:
-        if self.profile is None or self.slave is None:
+        drive_slave = self._drive_device()
+        if self.profile is None or drive_slave is None:
             raise RuntimeError("drive profile is not available")
         try:
-            raw_value = self.slave.sdo_read(0x6502, 0)
+            raw_value = drive_slave.sdo_read(0x6502, 0)
         except Exception as exc:
             self.mode_capability_word = None
             raise RuntimeError(
@@ -816,18 +1051,21 @@ class Runtime:
             )
 
     def configure_process_data(self, mode: str) -> None:
+        drive_slave = self._drive_device()
+        if drive_slave is None or self.profile is None:
+            raise RuntimeError("drive profile is not available")
         rx_pdo, rx_bytes, mode_value = self.mode_settings(mode)
         for index, value in ((0x1C12, rx_pdo), (0x1C13, self.profile.tx_pdo)):
-            self.slave.sdo_write(index, 0, b"\x00")
-            self.slave.sdo_write(index, 1, value.to_bytes(2, "little"))
-            self.slave.sdo_write(index, 0, b"\x01")
-        self.slave.sdo_write(0x6040, 0, (0x0080).to_bytes(2, "little"))
-        self.slave.sdo_write(
+            drive_slave.sdo_write(index, 0, b"\x00")
+            drive_slave.sdo_write(index, 1, value.to_bytes(2, "little"))
+            drive_slave.sdo_write(index, 0, b"\x01")
+        drive_slave.sdo_write(0x6040, 0, (0x0080).to_bytes(2, "little"))
+        drive_slave.sdo_write(
             0x6060, 0, mode_value.to_bytes(1, "little", signed=True)
         )
         self.motion_mode = mode
         io_map_size = self.master.config_overlap_map()
-        actual_sizes = (len(self.slave.output), len(self.slave.input))
+        actual_sizes = (len(drive_slave.output), len(drive_slave.input))
         expected_sizes = (rx_bytes, self.profile.tx_bytes)
         if actual_sizes != expected_sizes:
             raise RuntimeError(
@@ -835,10 +1073,11 @@ class Runtime:
                 f"{expected_sizes[0]}/{expected_sizes[1]}, "
                 f"got {actual_sizes[0]}/{actual_sizes[1]}"
             )
-        if io_map_size != sum(expected_sizes):
+        expected_map_size = self._expected_process_image_size(rx_bytes)
+        if io_map_size != expected_map_size:
             raise RuntimeError(
                 f"unexpected {mode.upper()} process image size: {io_map_size} "
-                f"(expected {sum(expected_sizes)})"
+                f"(expected {expected_map_size})"
             )
         self.expected_wkc = self.master.expected_wkc
         self.pp_halted = mode == MODE_PP
@@ -872,20 +1111,62 @@ class Runtime:
             raise RuntimeError("drive did not reach OP")
         LOGGER.info("EtherCAT reached OP state")
 
+    def request_io_operational(self) -> None:
+        self.master.state = pysoem.OP_STATE
+        self.master.write_state()
+        if self.master.state_check(pysoem.OP_STATE, 500_000) != pysoem.OP_STATE:
+            raise RuntimeError("digital I/O device did not reach OP")
+        LOGGER.info("EtherCAT digital I/O reached OP state")
+
+    def _identify_slaves(self) -> None:
+        self.slave = None
+        self.drive_slave = None
+        self.io_slave = None
+        self.profile = None
+        self.io_profile = None
+        unsupported: list[str] = []
+        for candidate in self.master.slaves:
+            drive_profile = get_drive_profile(candidate.man, candidate.id)
+            io_profile = get_remote_io_profile(candidate.man, candidate.id)
+            identity = f"0x{candidate.man:08X}/0x{candidate.id:08X}"
+            if drive_profile is not None:
+                if self.drive_slave is not None:
+                    raise RuntimeError("multiple supported EtherCAT drives are not supported")
+                self.drive_slave = candidate
+                self.profile = drive_profile
+            elif io_profile is not None:
+                if self.io_slave is not None:
+                    raise RuntimeError("multiple supported digital I/O devices are not supported")
+                self.io_slave = candidate
+                self.io_profile = io_profile
+            else:
+                unsupported.append(identity)
+        if unsupported:
+            raise RuntimeError(
+                "unsupported EtherCAT slave(s): " + ", ".join(unsupported)
+            )
+        if self.drive_slave is None and self.io_slave is None:
+            raise RuntimeError("no supported EtherCAT device found")
+        self.slave = self.drive_slave or self.io_slave
+
     def configure(self) -> None:
         LOGGER.info("Configuring EtherCAT master")
-        if self.master.config_init() != 1:
-            raise RuntimeError("expected one EtherCAT slave")
-        self.slave = self.master.slaves[0]
-        self.profile = get_drive_profile(self.slave.man, self.slave.id)
-        if self.profile is None:
-            raise RuntimeError(
-                "unsupported EtherCAT slave "
-                f"0x{self.slave.man:08X}/0x{self.slave.id:08X}"
-            )
-        self._read_mode_capabilities()
-        self.configure_process_data(self.motion_mode)
-        self.request_operational()
+        if self.master.config_init() <= 0:
+            raise RuntimeError("expected at least one EtherCAT slave")
+        self._identify_slaves()
+        if self.profile is not None:
+            self._read_mode_capabilities()
+            self.configure_process_data(self.motion_mode)
+            if self.io_profile is not None:
+                self._validate_io_process_data()
+                with self.lock:
+                    self.io_input_mask = 0
+                    self.io_output_mask = 0
+            self.request_operational()
+            return
+        if self.io_profile is not None:
+            self.configure_io_process_data()
+            self.request_io_operational()
 
     def switch_mode(self, mode: str) -> None:
         LOGGER.info("Switching EtherCAT process data to %s mode", mode.upper())
@@ -893,10 +1174,9 @@ class Runtime:
         self.master.write_state()
         if self.master.state_check(pysoem.PREOP_STATE, 500_000) != pysoem.PREOP_STATE:
             raise RuntimeError("drive did not return to PRE-OP for mode switch")
-        if self.master.config_init() != 1:
-            raise RuntimeError("expected one EtherCAT slave after mode switch")
-        self.slave = self.master.slaves[0]
-        self.profile = get_drive_profile(self.slave.man, self.slave.id)
+        if self.master.config_init() <= 0:
+            raise RuntimeError("expected at least one EtherCAT slave after mode switch")
+        self._identify_slaves()
         if self.profile is None:
             raise RuntimeError(
                 "unsupported EtherCAT slave after mode switch "
@@ -904,6 +1184,8 @@ class Runtime:
             )
         self._read_mode_capabilities()
         self.configure_process_data(mode)
+        if self.io_profile is not None:
+            self._validate_io_process_data()
         self.request_operational()
         with self.lock:
             self.pending_mode = None
@@ -925,8 +1207,18 @@ class Runtime:
             self.master.open(self.interface)
             LOGGER.info("EtherCAT interface opened")
             self.configure()
+            if self.profile is None and self.io_profile is not None:
+                with self.lock:
+                    self.state, self.message = "OPERATIONAL", "Digital I/O ready"
+                self.run_io_loop()
+                return
             with self.lock:
-                self.state, self.message = "OPERATIONAL", "Ready; hold a Jog button"
+                self.state, self.message = (
+                    "OPERATIONAL",
+                    "Ready; drive and digital I/O connected"
+                    if self.io_profile is not None
+                    else "Ready; hold a Jog button",
+                )
             while self.running:
                 with self.lock:
                     pending_mode = self.pending_mode
@@ -1042,10 +1334,13 @@ class Runtime:
                 else:
                     self.wkc = self.cycle(0x000F, 0)
                 self.feedback()
+                if self.io_profile is not None:
+                    self.read_io_inputs()
                 if self.wkc != self.expected_wkc:
                     self.disable()
                     self.enabled = False
                     with self.lock:
+                        self.io_output_mask = 0
                         self.state = "ERROR"
                         self.message = (
                             f"Process-data WKC mismatch: {self.wkc}/"
@@ -1096,8 +1391,14 @@ class Runtime:
                 self.state, self.message = "ERROR", f"{type(exc).__name__}: {exc}"
         finally:
             try:
-                if self.slave is not None:
+                if self.profile is not None and self._drive_device() is not None:
+                    with self.lock:
+                        self.io_output_mask = 0
                     self.cycle(0x0006, 0)
+                elif self.io_profile is not None and self._io_device() is not None:
+                    with self.lock:
+                        self.io_output_mask = 0
+                    self.io_cycle()
             except Exception:
                 pass
             self.master.close()

@@ -44,6 +44,25 @@
 - 当前位置反馈来自 TxPDO `0x6064`；使用 `config_overlap_map()` 时周期必须调用 `send_overlap_processdata()`，否则 WKC 仍可能为 3 但 TxPDO 输入全 0
 - PV/PP 动态切换时会重新执行 `config_init()` 重建 FMMU/Sync Manager，确保 `0x6064` 反馈在切换后继续刷新
 
+## HAUTO 远程 I/O
+
+- ESI：`ESI/HAUTO_AX58100_DIO_IO_MAP_FIX.xml`
+- 实际设备名：`HAUTO_DIO_16`
+- Vendor/Product/Revision：`0x00000001/0x00010200/0x00000001`
+- 固定 RxPDO `0x1600`、TxPDO `0x1A00`，实际过程镜像为输出 2 字节、输入 2 字节
+- Runtime 识别为 `digital_io`，直接请求 OP，周期读取 16 路 DI 并控制 16 路 DO；不执行 CiA 402 使能、Jog 或运动模式
+- WebSocket 命令为 `set_output(channel, enabled)`；输出初始为零，停止、客户端断开和 Runtime 退出时清零
+- 真实网卡验证：从站可进入 OP，AL 状态为 `0x0000`；连续过程数据 WKC 观测为 `3,1,1` 重复，运行时保留正 WKC 的 I/O 状态并显示实际/期望 WKC，`WKC <= 0` 才进入错误并清零输出
+
+## 伺服与远程 I/O 共存
+
+- Runtime 不再要求总线上只有一个从站，会逐个识别支持的 profile；当前限制为最多一个伺服和一个 HAUTO I/O
+- `drive_slave` 与 `io_slave` 分开保存，`self.slave` 仅作为单设备和旧测试接口的兼容别名
+- 伺服存在时统一使用 `config_overlap_map()`，一个周期同时写伺服输出和 HAUTO DO，再读取伺服反馈与 HAUTO DI
+- snapshot 返回 `deviceType = mixed`、`hasDrive`、`hasDigitalIo`、`driveDevice`、`ioDevice`；Electron HMI 在混合状态同时显示伺服和 I/O 页面
+- 伺服进入 `ENABLED/JOGGING/PP_MOVING/HOMING/CSP_MOVING` 时仍允许 `set_output`；停止命令会清零 HAUTO 输出
+- 当前混合配置已通过双从站模拟测试；尚未在同一真实总线上同时连接伺服和 HAUTO，现场仍需确认总 WKC、拓扑顺序和安全链路
+
 ## Jog 修复
 
 旧桌面 HMI 曾在 Jog 时直接发送 `0x000F`，导致驱动未完成 CiA 402 使能而不

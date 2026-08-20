@@ -40,7 +40,13 @@
   const settingsDialog = $("settingsDialog");
   const closeSettings = $("closeSettings");
   const modeButtons = [...document.querySelectorAll(".mode-option")];
+  const ioInputs = $("ioInputs");
+  const ioOutputs = $("ioOutputs");
+  const drivePage = document.querySelector(".control-page");
+  const ioPage = $("ioPage");
+  const viewButtons = [...document.querySelectorAll(".nav-item[data-view]")];
   const themeStorageKey = "ecat-test-theme";
+  let activeView = "drive";
   let snap = {
     state: "STARTING",
     enabled: false,
@@ -49,6 +55,13 @@
     interface: null,
     motionMode: "pv",
     availableModes: legacyModes,
+    deviceType: "",
+    hasDrive: false,
+    hasDigitalIo: false,
+    ioInputMask: 0,
+    ioOutputMask: 0,
+    ioInputChannels: 0,
+    ioOutputChannels: 0,
     ppMoving: false,
     homingActive: false,
     cspMoving: false,
@@ -96,7 +109,151 @@
     return snap.state === "SWITCHING" ? requestedMode : snap.motionMode;
   }
 
+  function formatMask(value) {
+    return `0x${(Number(value) & 0xffff).toString(16).padStart(4, "0").toUpperCase()}`;
+  }
+
+  function appendChannelText(parent, className, text) {
+    const element = document.createElement("span");
+    element.className = className;
+    element.textContent = text;
+    parent.append(element);
+    return element;
+  }
+
+  function buildIoChannels() {
+    if (ioInputs.childElementCount || ioOutputs.childElementCount) return;
+    for (let channel = 0; channel < 16; channel += 1) {
+      const inputItem = document.createElement("div");
+      inputItem.className = "io-channel";
+      inputItem.dataset.channel = String(channel);
+      appendChannelText(inputItem, "io-channel-label", `DI ${String(channel).padStart(2, "0")}`);
+      appendChannelText(inputItem, "io-channel-name", `输入 ${channel}`);
+      const inputSignal = document.createElement("span");
+      inputSignal.className = "io-signal";
+      inputSignal.dataset.active = "0";
+      inputSignal.setAttribute("aria-hidden", "true");
+      inputItem.append(inputSignal);
+      const inputState = appendChannelText(inputItem, "io-signal-state", "OFF");
+      inputState.dataset.state = "off";
+      ioInputs.append(inputItem);
+
+      const outputItem = document.createElement("label");
+      outputItem.className = "io-channel io-output-channel";
+      outputItem.dataset.channel = String(channel);
+      appendChannelText(outputItem, "io-channel-label", `DO ${String(channel).padStart(2, "0")}`);
+      appendChannelText(outputItem, "io-channel-name", `输出 ${channel}`);
+      const outputControl = document.createElement("span");
+      outputControl.className = "io-output-control";
+      const outputInput = document.createElement("input");
+      outputInput.type = "checkbox";
+      outputInput.className = "io-output-input";
+      outputInput.dataset.channel = String(channel);
+      outputInput.addEventListener("change", () => {
+        if (!outputInput.disabled) {
+          api("set_output", { channel, enabled: outputInput.checked });
+        }
+      });
+      const outputTrack = document.createElement("span");
+      outputTrack.className = "io-output-track";
+      outputTrack.setAttribute("aria-hidden", "true");
+      outputControl.append(outputInput, outputTrack);
+      outputItem.append(outputControl);
+      ioOutputs.append(outputItem);
+    }
+  }
+
+  function renderIo(s) {
+    const isDigitalIo = s.hasDigitalIo ?? (
+      s.deviceType === "digital_io" || s.deviceType === "mixed"
+    );
+    const inputMask = Number(s.ioInputMask) || 0;
+    const outputMask = Number(s.ioOutputMask) || 0;
+    const ioConnected = s.ioConnected ?? (isDigitalIo && s.connected);
+    const outputEnabled = isDigitalIo && ioConnected && s.state !== "ERROR";
+    $("ioInputMask").textContent = formatMask(inputMask);
+    $("ioOutputMask").textContent = formatMask(outputMask);
+    $("ioWkc").textContent = `${s.wkc ?? 0} / ${s.expectedWkc ?? 0}`;
+    $("ioDeviceName").textContent = s.ioDevice || s.device || "未识别设备";
+    $("ioMessage").textContent = isDigitalIo
+      ? (s.message || "等待数字 I/O 周期。")
+      : "当前设备不是数字 I/O。";
+    $("ioInputBadge").textContent = isDigitalIo && ioConnected ? "实时" : "等待";
+    $("ioInputBadge").dataset.off = isDigitalIo && ioConnected ? "0" : "1";
+    $("ioOutputBadge").textContent = outputEnabled ? "可控" : "禁止";
+    $("ioOutputBadge").dataset.off = outputEnabled ? "0" : "1";
+    [...ioInputs.children].forEach((item, channel) => {
+      const active = Boolean(inputMask & (1 << channel));
+      const signal = item.querySelector(".io-signal");
+      const state = item.querySelector(".io-signal-state");
+      signal.dataset.active = active ? "1" : "0";
+      state.textContent = active ? "ON" : "OFF";
+      state.dataset.state = active ? "on" : "off";
+      item.setAttribute("aria-label", `DI ${String(channel).padStart(2, "0")} ${active ? "ON" : "OFF"}`);
+    });
+    [...ioOutputs.children].forEach((item, channel) => {
+      const outputInput = item.querySelector(".io-output-input");
+      outputInput.checked = Boolean(outputMask & (1 << channel));
+      outputInput.disabled = !outputEnabled;
+      item.setAttribute("aria-label", `DO ${String(channel).padStart(2, "0")}`);
+    });
+  }
+
+  function updateNavigation(hasDrive, hasDigitalIo) {
+    const available = { drive: hasDrive, io: hasDigitalIo };
+    if (!available[activeView]) {
+      activeView = hasDrive ? "drive" : hasDigitalIo ? "io" : "drive";
+    }
+    viewButtons.forEach((button) => {
+      const view = button.dataset.view;
+      const isAvailable = Boolean(available[view]);
+      const isActive = isAvailable && view === activeView;
+      const connected = view === "drive"
+        ? (snap.driveConnected ?? snap.connected)
+        : (snap.ioConnected ?? snap.connected);
+      const status = button.querySelector(".nav-copy small");
+      button.disabled = !isAvailable;
+      button.classList.toggle("is-active", isActive);
+      button.setAttribute("aria-current", isActive ? "page" : "false");
+      button.title = !isAvailable
+        ? "当前总线未识别此设备"
+        : isActive
+          ? "当前界面"
+          : `切换到${view === "drive" ? "驱动" : "I/O"}界面`;
+      if (status) {
+        status.textContent = !isAvailable
+          ? "未接入"
+          : snap.state === "ERROR"
+            ? "故障"
+            : connected
+              ? "已连接"
+              : "已识别";
+      }
+    });
+  }
+
   function updateControls() {
+    const hasDrive = snap.hasDrive ?? (
+      snap.deviceType === "drive" || snap.deviceType === "mixed"
+    );
+    const hasDigitalIo = snap.hasDigitalIo ?? (
+      snap.deviceType === "digital_io" || snap.deviceType === "mixed"
+    );
+    updateNavigation(hasDrive, hasDigitalIo);
+    const showDrive = hasDrive && activeView === "drive";
+    const showDigitalIo = hasDigitalIo && activeView === "io";
+    drivePage.hidden = !showDrive;
+    ioPage.hidden = !showDigitalIo;
+    $("pageTitle").textContent = showDrive
+      ? "驱动控制"
+      : showDigitalIo
+        ? "远程 I/O"
+        : "等待设备";
+    $("pageSubtitle").textContent = showDrive
+      ? "CiA 402 多模式运动测试"
+      : showDigitalIo
+        ? "16 路数字输入监视与 16 路数字输出控制"
+        : "连接 EtherCAT 设备后可选择操作界面";
     const mode = viewMode();
     const availableModes = Array.isArray(snap.availableModes)
       ? snap.availableModes
@@ -105,13 +262,17 @@
     const hasMotion = snap.moving ?? Boolean(
       snap.velocityCommand || snap.ppMoving || snap.homingActive || snap.cspMoving
     );
-    const canEnable = snap.connected && snap.state !== "ERROR" && snap.state !== "SWITCHING";
+    const canEnable = hasDrive
+      && snap.connected
+      && snap.state !== "ERROR"
+      && snap.state !== "SWITCHING";
     const canSelectAdapter = !snap.enableRequested
       && !snap.enabled
       && !snap.velocityCommand
       && !hasMotion
       && snap.state !== "SWITCHING";
-    const canSwitchMode = snap.connected
+    const canSwitchMode = hasDrive
+      && snap.connected
       && !snap.enableRequested
       && !snap.enabled
       && snap.state !== "ERROR"
@@ -186,7 +347,16 @@
       : !modeAvailable
         ? "当前驱动的 ESI/固件没有声明此模式，不能切换。"
         : "未使能时可切换运行模式。";
+    renderIo(snap);
   }
+
+  viewButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      if (button.disabled || !button.dataset.view) return;
+      activeView = button.dataset.view;
+      updateControls();
+    });
+  });
 
   function renderAdapters(items) {
     adapters = Array.isArray(items)
@@ -394,6 +564,7 @@
   }
   ["accel", "decel"].forEach((id) => $(id).addEventListener("change", pushRamp));
   updatePpModeHint();
+  buildIoChannels();
 
   /* ---------- Snapshot rendering ---------- */
   const stateLabels = {
@@ -462,9 +633,12 @@
         if (message.type === "ack") pendingCommand = "";
         if (message.type === "error") {
           requestedMode = snap.motionMode || "pv";
-          $(pendingCommand === "select_interface" || pendingCommand === "list_adapters"
+          const target = pendingCommand === "select_interface" || pendingCommand === "list_adapters"
             ? "adapterHint"
-            : "modeHint").textContent = message.error;
+            : pendingCommand === "set_output"
+              ? "ioOutputHint"
+              : "modeHint";
+          $(target).textContent = message.error;
           pendingCommand = "";
           updateControls();
         }

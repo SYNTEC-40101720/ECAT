@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from dm3c_ecat.device_profiles import DRIVE_PROFILES
+from dm3c_ecat.device_profiles import DRIVE_PROFILES, REMOTE_IO_PROFILES
 import dm3c_ecat.hmi as hmi
 
 
@@ -177,3 +177,80 @@ def test_snapshot_exposes_profile_modes_and_motion_state(runtime):
     assert snapshot["motionModeValue"] == 6
     assert snapshot["homingActive"] is True
     assert snapshot["moving"] is True
+
+
+def test_remote_io_reads_inputs_and_writes_output_bits(
+    runtime, process_slave, process_master
+):
+    process_slave.output = bytearray(2)
+    process_slave.input = bytearray(b"\x05\x80")
+    runtime.io_profile = REMOTE_IO_PROFILES[0]
+    runtime.slave = process_slave
+    runtime.master = process_master
+    runtime.expected_wkc = 3
+    runtime.state = "OPERATIONAL"
+
+    runtime.set_digital_output(0, True)
+    runtime.set_digital_output(15, True)
+
+    assert runtime.io_output_mask == 0x8001
+    assert runtime.io_cycle() == 3
+    assert bytes(process_slave.output) == b"\x01\x80"
+    assert runtime.read_io_inputs() == 0x8005
+    assert runtime.snapshot()["ioInputMask"] == 0x8005
+    assert runtime.snapshot()["ioOutputMask"] == 0x8001
+
+    runtime.stop_motion()
+    assert runtime.io_output_mask == 0
+
+    runtime.set_digital_output(0, True)
+    runtime.stop()
+    assert runtime.io_output_mask == 0
+
+
+def test_remote_io_rejects_invalid_output_channel(runtime):
+    runtime.io_profile = REMOTE_IO_PROFILES[0]
+    runtime.state = "OPERATIONAL"
+
+    with pytest.raises(ValueError, match="0..15"):
+        runtime.set_digital_output(16, True)
+
+
+def test_runtime_keeps_drive_and_remote_io_on_the_same_bus(runtime):
+    drive_slave = MagicMock()
+    drive_slave.man = DRIVE_PROFILES[1].vendor
+    drive_slave.id = DRIVE_PROFILES[1].product
+    drive_slave.output = bytearray(DRIVE_PROFILES[1].rx_bytes)
+    drive_slave.input = bytearray(DRIVE_PROFILES[1].tx_bytes)
+    drive_slave.sdo_read.return_value = b"\xA5\x00"
+    io_slave = MagicMock()
+    io_slave.man = REMOTE_IO_PROFILES[0].vendor
+    io_slave.id = REMOTE_IO_PROFILES[0].product
+    io_slave.output = bytearray(REMOTE_IO_PROFILES[0].rx_bytes)
+    io_slave.input = bytearray(REMOTE_IO_PROFILES[0].tx_bytes)
+
+    runtime.master.slaves = [drive_slave, io_slave]
+    runtime.master.config_init.return_value = 2
+    runtime.master.config_overlap_map.return_value = 42
+    runtime.master.expected_wkc = 4
+    runtime.master.state_check.side_effect = [
+        hmi.pysoem.SAFEOP_STATE,
+        hmi.pysoem.OP_STATE,
+    ]
+
+    runtime.configure()
+    runtime.state = "ENABLED"
+    runtime.set_digital_output(0, True)
+    runtime.cycle(0x000F, 123)
+
+    assert runtime.profile is DRIVE_PROFILES[1]
+    assert runtime.io_profile is REMOTE_IO_PROFILES[0]
+    assert runtime.slave is drive_slave
+    assert runtime.snapshot()["deviceType"] == "mixed"
+    assert runtime.snapshot()["devices"] == [
+        DRIVE_PROFILES[1].name,
+        REMOTE_IO_PROFILES[0].name,
+    ]
+    assert bytes(io_slave.output) == b"\x01\x00"
+    runtime.read_io_inputs()
+    assert runtime.master.send_overlap_processdata.called

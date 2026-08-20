@@ -1,4 +1,4 @@
-"""Read-only EtherCAT discovery for the Leadshine DM3C-EC556."""
+"""Read-only EtherCAT discovery for supported EtherCAT devices."""
 
 from __future__ import annotations
 
@@ -7,7 +7,12 @@ import sys
 
 import pysoem
 
-from .device_profiles import DriveProfile, get_drive_profile, resolve_default_interface
+from .device_profiles import (
+    DriveProfile,
+    get_drive_profile,
+    get_remote_io_profile,
+    resolve_default_interface,
+)
 
 
 def get_int(obj: object, name: str, default: int = 0) -> int:
@@ -76,19 +81,22 @@ def main() -> int:
             print("No EtherCAT slaves found.", file=sys.stderr)
             return 2
 
-        first_slave = master.slaves[0]
-        first_profile = get_drive_profile(first_slave.man, first_slave.id)
+        drive_entries = [
+            (slave, get_drive_profile(slave.man, slave.id))
+            for slave in master.slaves
+            if get_drive_profile(slave.man, slave.id) is not None
+        ]
         if args.configure_velocity_pdo:
-            if first_profile is None:
+            if not drive_entries:
                 raise RuntimeError(
-                    "unsupported first slave "
-                    f"0x{first_slave.man:08X}/0x{first_slave.id:08X}"
+                    "velocity PDO configuration requires a supported drive"
                 )
+            drive_slave, drive_profile = drive_entries[0]
             print(
-                f"Configuring 0x1C12 -> 0x{first_profile.rx_pdo:04X}, "
-                f"0x1C13 -> 0x{first_profile.tx_pdo:04X}"
+                f"Configuring drive 0x1C12 -> 0x{drive_profile.rx_pdo:04X}, "
+                f"0x1C13 -> 0x{drive_profile.tx_pdo:04X}"
             )
-            configure_velocity_pdo(first_slave, first_profile)
+            configure_velocity_pdo(drive_slave, drive_profile)
 
         io_map_size = (
             master.config_overlap_map()
@@ -104,7 +112,7 @@ def main() -> int:
 
         master.read_state()
 
-        assigned_rx_bits = 0
+        assigned_rx_bits: dict[int, int] = {}
         for index, slave in enumerate(master.slaves, start=1):
             vendor = get_int(slave, "man")
             product = get_int(slave, "id")
@@ -123,41 +131,56 @@ def main() -> int:
             print(f"  AL     : 0x{al_status:04X}, code 0x{al_code:04X}")
             print(f"  PDO    : Rx {output_size} bits, Tx {input_size} bits")
 
-            if index == 1:
+            drive_profile = get_drive_profile(vendor, product)
+            io_profile = get_remote_io_profile(vendor, product)
+            if io_profile is not None:
+                print(
+                    f"  Profile: fixed {io_profile.input_channels}DI/"
+                    f"{io_profile.output_channels}DO RxPDO 0x{io_profile.rx_pdo:04X} "
+                    f"/ TxPDO 0x{io_profile.tx_pdo:04X}"
+                )
+                assigned_rx_bits[index] = io_profile.rx_bytes * 8
+            elif drive_profile is not None:
                 print(f"  0x1C12:00: {read_sdo_hex(slave, 0x1C12, 0):s}")
                 print(f"  0x1C12:01: {read_sdo_hex(slave, 0x1C12, 1):s}")
                 print(f"  0x1C13:00: {read_sdo_hex(slave, 0x1C13, 0):s}")
                 print(f"  0x1C13:01: {read_sdo_hex(slave, 0x1C13, 1):s}")
-                rx_pdo = first_profile.rx_pdo if first_profile else 0x1602
-                tx_pdo = first_profile.tx_pdo if first_profile else 0x1A00
-                assigned_rx_bits = print_mapping(slave, rx_pdo, "RxPDO")
-                print_mapping(slave, tx_pdo, "TxPDO")
-                if first_profile is None:
-                    print(
-                        "  WARNING: first slave is not a supported drive profile."
-                    )
+                rx_pdo = drive_profile.rx_pdo if args.configure_velocity_pdo else 0x1602
+                assigned_rx_bits[index] = print_mapping(slave, rx_pdo, "RxPDO")
+                print_mapping(slave, drive_profile.tx_pdo, "TxPDO")
+            else:
+                print("  WARNING: slave is not a supported device profile.")
 
         print(f"Expected WKC: {getattr(master, 'expected_wkc', 0)}")
         print(f"IO map size: {io_map_size} bytes")
-        if len(master.slaves[0].output) * 8 != assigned_rx_bits:
-            print(
-                "WARNING: pysoem output buffer size differs from the assigned "
-                "PDO layout; do not use this probe for motion commands."
-            )
-        if first_profile is not None and (
-            len(first_slave.output) != first_profile.rx_bytes
-            or len(first_slave.input) != first_profile.tx_bytes
-        ):
-            print(
-                "WARNING: process image size differs from the supported profile; "
-                "do not use this probe for motion commands."
-            )
+        for index, slave in enumerate(master.slaves, start=1):
+            if index in assigned_rx_bits and len(slave.output) * 8 != assigned_rx_bits[index]:
+                print(
+                    f"WARNING: slave {index} output buffer size differs from the "
+                    "assigned PDO layout; do not use this probe for motion commands."
+                )
+            supported_profile = get_drive_profile(slave.man, slave.id)
+            supported_profile = supported_profile or get_remote_io_profile(slave.man, slave.id)
+            if supported_profile is not None and (
+                len(slave.output) != supported_profile.rx_bytes
+                or len(slave.input) != supported_profile.tx_bytes
+            ):
+                print(
+                    f"WARNING: slave {index} process image size differs from the "
+                    "supported profile; do not use this probe for motion commands."
+                )
         if args.cycle_once:
-            master.send_processdata()
+            for slave in master.slaves:
+                slave.output = bytes(len(slave.output))
+            if args.configure_velocity_pdo:
+                master.send_overlap_processdata()
+            else:
+                master.send_processdata()
             wkc = master.receive_processdata(10_000)
             print(f"SAFE-OP zero-output WKC: {wkc}")
-            print(f"  output: {bytes(master.slaves[0].output).hex()}")
-            print(f"  input : {bytes(master.slaves[0].input).hex()}")
+            for index, slave in enumerate(master.slaves, start=1):
+                print(f"  slave {index} output: {bytes(slave.output).hex()}")
+                print(f"  slave {index} input : {bytes(slave.input).hex()}")
         if args.configure_velocity_pdo:
             print("PDO configuration complete; no OP request, drive enable, or motion command was sent.")
         else:

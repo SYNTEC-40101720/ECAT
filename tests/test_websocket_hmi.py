@@ -98,3 +98,17 @@ def test_csp_commands_pass_parameters_to_runtime():
 
     assert response == {"type": "ack", "command": "move_csp", "accepted": True}
     runtime.move_csp.assert_called_once_with(1200, 1.0)
+
+
+def test_digital_output_command_passes_channel_and_state():
+    runtime = MagicMock()
+    gateway = websocket_hmi.WebSocketHmi(runtime)
+
+    response = asyncio.run(
+        gateway.handle_command(
+            {"command": "set_output", "channel": 4, "enabled": True}
+        )
+    )
+
+    assert response == {"type": "ack", "command": "set_output", "accepted": True}
+    runtime.set_digital_output.assert_called_once_with(4, True)

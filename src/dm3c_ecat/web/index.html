@@ -17,6 +17,22 @@
           <span>控制台</span>
         </div>
       </div>
+      <nav class="nav" id="viewNav" aria-label="功能界面">
+        <button class="nav-item is-active" type="button" data-view="drive" aria-current="page">
+          <span class="nav-ico" aria-hidden="true">DRV</span>
+          <span class="nav-copy">
+            <b>驱动</b>
+            <small id="driveNavStatus">等待连接</small>
+          </span>
+        </button>
+        <button class="nav-item" type="button" data-view="io" aria-current="false">
+          <span class="nav-ico" aria-hidden="true">I/O</span>
+          <span class="nav-copy">
+            <b>I/O</b>
+            <small id="ioNavStatus">等待连接</small>
+          </span>
+        </button>
+      </nav>
       <div class="side-note">
         <span class="side-note-label">本地会话</span>
         <span>控制链路仅限本机</span>
@@ -32,8 +48,8 @@
       <header class="topbar">
         <div>
           <span class="topbar-kicker">ECAT TEST / 操作控制台</span>
-          <h1>手动控制</h1>
-          <p class="topbar-sub">CiA 402 多模式运动测试</p>
+          <h1 id="pageTitle">手动控制</h1>
+          <p class="topbar-sub" id="pageSubtitle">CiA 402 多模式运动测试</p>
         </div>
         <div class="topbar-right">
           <div class="topbar-status"><span class="status-pulse"></span><span>实时链路</span></div>
@@ -211,6 +227,52 @@
                   <p class="hint center">当前驱动未声明此模式的过程数据映射，不能发送运动命令。</p>
                 </div>
                 <button class="stop-btn" id="stopBtn">⏹ 停止运动</button>
+              </div>
+            </div>
+          </div>
+        </section>
+        <section class="page io-page" id="ioPage" hidden aria-labelledby="ioPageTitle">
+          <div class="io-summary">
+            <div class="io-summary-copy">
+              <span class="section-kicker">DIGITAL I/O</span>
+              <h2 id="ioPageTitle">HAUTO 16DI / 16DO</h2>
+              <p id="ioMessage" aria-live="polite">等待数字 I/O 周期。</p>
+            </div>
+            <div class="io-readout">
+              <span>输入掩码</span>
+              <strong id="ioInputMask">0x0000</strong>
+              <small>DI 00 - DI 15</small>
+            </div>
+            <div class="io-readout">
+              <span>输出掩码</span>
+              <strong id="ioOutputMask">0x0000</strong>
+              <small>DO 00 - DO 15</small>
+            </div>
+            <div class="io-readout io-readout-status">
+              <span>过程数据 WKC</span>
+              <strong id="ioWkc">0 / 0</strong>
+              <small id="ioDeviceName">未识别设备</small>
+            </div>
+          </div>
+          <div class="grid-2 io-layout">
+            <div class="card io-card">
+              <div class="card-head">
+                <h2>数字输入</h2>
+                <span class="badge" id="ioInputBadge">等待</span>
+              </div>
+              <div class="card-body">
+                <div class="io-channel-grid" id="ioInputs" aria-label="16 路数字输入"></div>
+                <p class="hint" id="ioInputHint">输入状态来自 EtherCAT TxPDO。</p>
+              </div>
+            </div>
+            <div class="card io-card">
+              <div class="card-head">
+                <h2>数字输出</h2>
+                <span class="badge" id="ioOutputBadge" data-off="1">禁止</span>
+              </div>
+              <div class="card-body">
+                <div class="io-channel-grid" id="ioOutputs" aria-label="16 路数字输出"></div>
+                <p class="hint io-safety" id="ioOutputHint">输出会在页面断开、程序退出或点击停止后归零。</p>
               </div>
             </div>
           </div>

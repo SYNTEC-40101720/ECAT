@@ -103,6 +103,23 @@ class DriveProfile:
         return tuple(item.mode for item in self.mode_pdos)
 
 
+@dataclass(frozen=True, slots=True)
+class RemoteIoProfile:
+    name: str
+    vendor: int
+    product: int
+    rx_pdo: int
+    tx_pdo: int
+    rx_bytes: int
+    tx_bytes: int
+    input_channels: int
+    output_channels: int
+
+    @property
+    def io_map_bytes(self) -> int:
+        return self.rx_bytes + self.tx_bytes
+
+
 DRIVE_PROFILES = (
     DriveProfile(
         "Leadshine DM3C-EC556",
@@ -146,6 +163,28 @@ PROFILES_BY_ID = {
     (profile.vendor, profile.product): profile for profile in DRIVE_PROFILES
 }
 
+REMOTE_IO_PROFILES = (
+    RemoteIoProfile(
+        "HAUTO DIO 16DI/16DO",
+        0x00000001,
+        0x00010200,
+        0x1600,
+        0x1A00,
+        2,
+        2,
+        16,
+        16,
+    ),
+)
+
+REMOTE_IO_PROFILES_BY_ID = {
+    (profile.vendor, profile.product): profile for profile in REMOTE_IO_PROFILES
+}
+
 
 def get_drive_profile(vendor: int, product: int) -> DriveProfile | None:
     return PROFILES_BY_ID.get((vendor, product))
+
+
+def get_remote_io_profile(vendor: int, product: int) -> RemoteIoProfile | None:
+    return REMOTE_IO_PROFILES_BY_ID.get((vendor, product))

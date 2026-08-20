@@ -88,6 +88,21 @@ ecat-jog <velocity-in-drive-units> <seconds> --confirm-jog
 - 运行时读取 CiA 402 `0x6502` Supported Drive Modes，并将固件能力与本地已确认 PDO 映射取交集；读取失败会停止配置
 - KaiFull 实机 `0x6502 = 0x00A5`，声明 PP、PV、IP、CSV；当前 profile 只有 PV/PP 的可用 PDO，因此 HM/CSP 会被拒绝
 
+### HAUTO 远程 I/O
+
+- HAUTO DIO 16DI/16DO：Vendor/Product `0x00000001/0x00010200`
+- 固定 RxPDO `0x1600` / TxPDO `0x1A00`，过程镜像为输出 2 字节、输入 2 字节
+- Runtime 直接请求 OP，不执行 CiA 402 使能或运动模式；Web HMI 显示 16 路输入并提供 16 路输出开关
+- 输出初始为零；WebSocket 断开、程序退出或点击停止后输出清零
+- 当前硬件连续周期实测 WKC 会在 `3/3` 与 `1/3` 间变化，但从站保持 OP 且 AL 状态为零；运行时将非正 WKC 视为断链，正 WKC 显示为部分响应并继续刷新 I/O
+
+### 伺服与远程 I/O 共存
+
+- Runtime 会扫描同一 EtherCAT 总线上的所有从站，最多绑定一个已支持伺服和一个 HAUTO 远程 I/O；不是用 I/O 替换伺服
+- 只有伺服时显示 CiA 402 手动控制，只有 HAUTO 时显示数字 I/O；两者同时存在时 Electron HMI 同时显示两块面板
+- 混合总线使用同一个过程数据周期：伺服发送运动 PDO，HAUTO 同时发送 DO 并读取 DI；`set_output` 不依赖伺服是否处于 `ENABLED/JOGGING`
+- 目前实机分别验证过伺服和 HAUTO；伺服+HAUTO 同总线的过程镜像已由双从站模拟测试覆盖，首次现场组合接线仍需按安全门槛低速验证
+
 ### HMI 运动模式
 
 - `HM 回零`：仅在 `0x6502` 声明 HM 且 profile 提供 `0x1603` 时开放；使用 ESI 的 `0x1603`，回零方法必须按驱动器手册确认
