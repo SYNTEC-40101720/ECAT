@@ -9,7 +9,7 @@ import time
 
 import pysoem
 
-from .device_profiles import DEFAULT_INTERFACE, DriveProfile, get_drive_profile
+from .device_profiles import DriveProfile, get_drive_profile, resolve_default_interface
 CYCLE_US = 10_000
 
 
@@ -52,9 +52,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Bounded DM3C Profile Velocity jog")
     parser.add_argument("velocity", type=int, help="target velocity in drive units")
     parser.add_argument("seconds", type=float, help="maximum jog duration")
-    parser.add_argument("interface", nargs="?", default=DEFAULT_INTERFACE)
+    parser.add_argument("interface", nargs="?")
     parser.add_argument("--confirm-jog", action="store_true", help="required acknowledgement for motion")
     args = parser.parse_args()
+    interface = args.interface or resolve_default_interface()
+    if not interface:
+        parser.error("multiple or no physical EtherCAT adapters found; specify interface")
 
     if not args.confirm_jog:
         parser.error("motion requires --confirm-jog")
@@ -67,7 +70,7 @@ def main() -> int:
     slave = None
     profile: DriveProfile | None = None
     try:
-        master.open(args.interface)
+        master.open(interface)
         if master.config_init() != 1:
             raise RuntimeError("expected exactly one EtherCAT slave")
         slave = master.slaves[0]

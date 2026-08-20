@@ -31,11 +31,17 @@ npm install
 py start_ecat_test.py
 ```
 
-也可以直接使用 `npm start` 启动。若需要指定 EtherCAT 网卡：
+启动时会枚举 Npcap 网卡并过滤 WAN Miniport、Wi-Fi、蓝牙、VPN、虚拟和回环接口。
+只有一个物理网卡时自动使用它；存在多个物理网卡时，Electron HMI 会等待在网卡面板中选择。
+未选定网卡不会启动 EtherCAT 实时线程。网卡只能在驱动未使能且没有运动命令时切换。
+
+也可以直接使用 `npm start` 启动。若需要显式指定 EtherCAT 网卡：
 
 ```powershell
 py start_ecat_test.py --interface "\Device\NPF_{网卡 GUID}"
 ```
+
+`--interface` 和环境变量 `ECAT_INTERFACE` 都会覆盖自动探测；显式接口无效时会在运行状态中报告错误。
 
 `start_ecat_test.py` 和 `npm start` 都会进入同一条 Electron 启动流程。Electron
 主进程会自动完成以下流程：
@@ -68,6 +74,7 @@ ecat-probe --configure-velocity-pdo --cycle-once
 ecat-jog <velocity-in-drive-units> <seconds> --confirm-jog
 ```
 
+命令行工具在只有一个物理网卡时自动选择；多网卡或没有物理网卡时请把接口名作为位置参数传入。
 命令行 Jog 最长 10 秒，退出或中断时发送零速度并禁能。
 
 ## 当前测试配置
@@ -78,18 +85,21 @@ ecat-jog <velocity-in-drive-units> <seconds> --confirm-jog
 - CiA 402 mode: Profile Velocity，`0x6060 = 0x03`
 - 两种驱动都使用 `config_overlap_map()` 进入 SAFE-OP；新凯福驱动已验证零输出 WKC 为 `3`
 - 已验证故障复位控制字：`0x6040 = 0x0080`
+- 运行时读取 CiA 402 `0x6502` Supported Drive Modes，并将固件能力与本地已确认 PDO 映射取交集；读取失败会停止配置
+- KaiFull 实机 `0x6502 = 0x00A5`，声明 PP、PV、IP、CSV；当前 profile 只有 PV/PP 的可用 PDO，因此 HM/CSP 会被拒绝
 
 ### HMI 运动模式
 
-- `PV 点动`：保持现有正转/反转按住 Jog，使用 `0x1602` 和 `0x6060 = 0x03`
-- `PP 点位`：切换到未使能状态后选择模式，使用 `0x1601`、`0x6060 = 0x01`，填写目标位置、轮廓速度和加减速后执行一次定位
-- PP 目标支持绝对位置和相对位移：绝对模式填写坐标，方向由当前位置与目标坐标比较决定；相对模式下 `+` 为正向位移、`-` 为反向位移
-- 执行期间页面心跳中断会停止运动，停止按钮发送 PP Halt
+- `HM 回零`：仅在 `0x6502` 声明 HM 且 profile 提供 `0x1603` 时开放；使用 ESI 的 `0x1603`，回零方法必须按驱动器手册确认
+- `CSP 周期同步位置`：仅在 `0x6502` 声明 CSP 且 profile 提供对应 PDO 时开放；使用驱动实际 `0x1600` 映射，主站按 10 ms 周期生成目标位置轨迹；DM3C 当前 profile 为 8 bytes，KaiFull/SSD60N 实测为 13 bytes（含 `0x60FF` 目标速度字段）
+- 模式目录同时列出 CiA 402 的 `VM`、`PT`、`IP`、`CSV`、`CST` 标准值；当前两份本地 ESI 没有为这些模式提供可安全复用的完整 PDO 映射，因此 HMI 会显示但禁止切换和发送命令
+- HM/CSP 执行期间页面心跳中断会停止运动；Homing 状态字到位/错误位会更新页面状态
 - 模式切换必须在驱动未使能且没有运动命令时进行；运行时会经过 PRE-OP 重新配置 PDO，再回到 OP
-- PP 过程镜像实测为 Rx 19 bytes、Tx 23 bytes、IO map 42 bytes
 
 ESI 文件用于描述设备，不会被 `pysoem` 自动从 `ESI/` 目录加载；运行时支持列表和实际过程镜像要求位于
-`src/dm3c_ecat/device_profiles.py`。网卡可通过环境变量覆盖：
+`src/dm3c_ecat/device_profiles.py`，CiA 402 模式值和 packet 元数据位于
+`src/dm3c_ecat/motion_modes.py`。Homing/CSP 首次接入真实设备前仍需低速、短时验证。
+如需覆盖自动探测，可设置环境变量：
 
 ```powershell
 $env:ECAT_INTERFACE = '\Device\NPF_{网卡 GUID}'

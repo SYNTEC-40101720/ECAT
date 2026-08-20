@@ -4,7 +4,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-LOGGER_NAME = "dm3c_ecat"
+LOGGER_NAME = "ecat_test"
 DEFAULT_LOG_FILE = Path.cwd() / "logs" / "ecat-test.log"
 
 

@@ -33,10 +33,17 @@
         <div>
           <span class="topbar-kicker">ECAT TEST / 操作控制台</span>
           <h1>手动控制</h1>
-          <p class="topbar-sub">PV 点动或 PP 点位运行</p>
+          <p class="topbar-sub">CiA 402 多模式运动测试</p>
         </div>
         <div class="topbar-right">
           <div class="topbar-status"><span class="status-pulse"></span><span>实时链路</span></div>
+          <button class="theme-toggle" id="themeToggle" type="button" aria-label="切换到深色主题" title="切换到深色主题" aria-pressed="false">
+            <span id="themeIcon" aria-hidden="true">☾</span>
+          </button>
+            <button class="settings-button" id="settingsButton" type="button" aria-label="打开设置" title="打开设置">
+              <span class="settings-button-icon" aria-hidden="true">⚙</span>
+              <span class="settings-button-label">设置</span>
+            </button>
           <span class="state-pill" id="statePill" data-state="idle">启动中</span>
         </div>
       </header>
@@ -56,11 +63,19 @@
               <div class="card-body">
                 <div class="metric-row"><span>使能状态</span><strong id="enableState" class="mono">未使能</strong></div>
                 <hr class="sep">
-                <div class="mode-switch" id="modeSwitch" role="group" aria-label="运动模式">
-                  <button class="mode-option is-active" id="modePv" type="button" data-mode="pv" aria-pressed="true">PV 点动</button>
-                  <button class="mode-option" id="modePp" type="button" data-mode="pp" aria-pressed="false">PP 点位</button>
+                <div class="mode-switch mode-catalog" id="modeSwitch" role="group" aria-label="CiA 402 运动模式">
+                  <button class="mode-option is-active" id="modePv" type="button" data-mode="pv" aria-pressed="true"><b>PV</b><small>轮廓速度</small></button>
+                  <button class="mode-option" id="modePp" type="button" data-mode="pp" aria-pressed="false"><b>PP</b><small>轮廓位置</small></button>
+                  <button class="mode-option" type="button" data-mode="vm" aria-pressed="false"><b>VM</b><small>速度模式</small></button>
+                  <button class="mode-option" type="button" data-mode="pt" aria-pressed="false"><b>PT</b><small>轮廓转矩</small></button>
+                  <button class="mode-option" type="button" data-mode="hm" aria-pressed="false"><b>HM</b><small>回零</small></button>
+                  <button class="mode-option" type="button" data-mode="ip" aria-pressed="false"><b>IP</b><small>插补位置</small></button>
+                  <button class="mode-option" type="button" data-mode="csp" aria-pressed="false"><b>CSP</b><small>周期同步位置</small></button>
+                  <button class="mode-option" type="button" data-mode="csv" aria-pressed="false"><b>CSV</b><small>周期同步速度</small></button>
+                  <button class="mode-option" type="button" data-mode="cst" aria-pressed="false"><b>CST</b><small>周期同步转矩</small></button>
                 </div>
                 <p class="hint" id="modeHint">未使能时可切换运行模式。</p>
+                <p class="hint mode-capability" id="modeCapabilityHint">正在读取驱动支持的模式。</p>
                 <div id="pvSettings" class="mode-settings">
                   <label class="field-label" for="velocity">目标速度（驱动单位）</label>
                   <input class="text-input" id="velocity" type="number" min="1" max="100000" value="1000" inputmode="numeric">
@@ -77,32 +92,60 @@
                   <p class="hint">加速/减速为 0 速↔目标速度的设定时间。</p>
                 </div>
                 <div id="ppSettings" class="mode-settings" hidden>
-                  <label class="field-label" for="ppTarget">目标位置（驱动脉冲）</label>
-                  <input class="text-input" id="ppTarget" type="number" min="-2147483648" max="2147483647" step="1" value="1000" inputmode="numeric">
+                  <label class="field-label" for="ppVelocity">轮廓速度（驱动单位）</label>
+                  <input class="text-input" id="ppVelocity" type="number" min="1" max="100000" step="1" value="1000" inputmode="numeric">
                   <div class="field-2">
                     <div>
-                      <label class="field-label" for="ppVelocity">轮廓速度</label>
-                      <input class="text-input" id="ppVelocity" type="number" min="1" max="100000" step="1" value="1000" inputmode="numeric">
+                      <label class="field-label" for="ppAccel">加速时间（秒）</label>
+                      <input class="text-input" id="ppAccel" type="number" min="0.01" max="60" step="0.01" value="0.5">
                     </div>
                     <div>
-                      <label class="field-label" for="ppAccel">轮廓加速度</label>
-                      <input class="text-input" id="ppAccel" type="number" min="1" max="10000000" step="1" value="1000" inputmode="numeric">
+                      <label class="field-label" for="ppDecel">减速时间（秒）</label>
+                      <input class="text-input" id="ppDecel" type="number" min="0.01" max="60" step="0.01" value="0.5">
                     </div>
                   </div>
-                  <label class="field-label" for="ppDecel">轮廓减速度</label>
-                  <input class="text-input" id="ppDecel" type="number" min="1" max="10000000" step="1" value="1000" inputmode="numeric">
-                  <div class="position-mode" role="group" aria-label="位置类型">
-                    <label class="position-option"><input type="radio" name="ppPositionMode" value="absolute" checked><span>绝对位置</span></label>
-                    <label class="position-option"><input type="radio" name="ppPositionMode" value="relative"><span>相对位移（正负方向）</span></label>
+                  <p class="hint">加减速时间按 0 速↔轮廓速度换算为驱动加速度值。</p>
+                </div>
+                <div id="hmSettings" class="mode-settings" hidden>
+                  <div class="field-2">
+                    <div>
+                      <label class="field-label" for="homingMethod">回零方法（6098）</label>
+                      <input class="text-input" id="homingMethod" type="number" min="-128" max="127" step="1" value="35" inputmode="numeric">
+                    </div>
+                    <div>
+                      <label class="field-label" for="homingOffset">回零偏置（驱动脉冲）</label>
+                      <input class="text-input" id="homingOffset" type="number" min="-2147483648" max="2147483647" step="1" value="0" inputmode="numeric">
+                    </div>
                   </div>
-                  <p class="hint" id="ppModeHint">绝对位置：目标是坐标值，方向由当前位置和目标坐标比较决定。</p>
+                  <div class="field-2">
+                    <div>
+                      <label class="field-label" for="homingFast">快速速度（驱动单位）</label>
+                      <input class="text-input" id="homingFast" type="number" min="1" max="100000" step="1" value="500" inputmode="numeric">
+                    </div>
+                    <div>
+                      <label class="field-label" for="homingSlow">慢速速度（驱动单位）</label>
+                      <input class="text-input" id="homingSlow" type="number" min="1" max="100000" step="1" value="100" inputmode="numeric">
+                    </div>
+                  </div>
+                  <label class="field-label" for="homingAccelTime">回零加速时间（秒）</label>
+                  <input class="text-input" id="homingAccelTime" type="number" min="0.01" max="60" step="0.01" value="0.5">
+                  <p class="hint">回零方法由驱动器固件定义；首次运行前确认限位、原点和安全链路。</p>
+                </div>
+                <div id="cspSettings" class="mode-settings" hidden>
+                  <label class="field-label" for="cspDuration">目标变化时间（秒）</label>
+                  <input class="text-input" id="cspDuration" type="number" min="0.01" max="60" step="0.01" value="1">
+                  <p class="hint">主站按 10 ms 周期持续发送目标位置，直到到达设定位置。</p>
+                </div>
+                <div id="modeUnavailableSettings" class="mode-settings mode-unavailable" hidden>
+                  <strong id="modeUnavailableTitle">当前驱动未提供此模式的 PDO</strong>
+                  <p class="hint" id="modeUnavailableText">请使用与驱动 ESI 和固件匹配的过程数据映射。</p>
                 </div>
               </div>
             </div>
 
             <!-- 点动按钮 -->
             <div class="card jog-card">
-              <div class="card-head"><h2>手动点动</h2></div>
+              <div class="card-head"><h2>运动测试</h2></div>
               <div class="card-body">
                 <div id="pvControls">
                   <div class="jog-grid">
@@ -118,15 +161,54 @@
                   <p class="hint center" id="jogHint">请先打开驱动使能</p>
                 </div>
                 <div id="ppControls" class="pp-controls" hidden>
-                  <div class="position-readout">
-                    <div><span>当前位置</span><strong id="actualPosition">0</strong></div>
-                    <div><span>目标位置</span><strong id="targetPosition">0</strong></div>
+                  <div class="pp-target-field">
+                    <label class="field-label" for="ppTarget">目标位置（驱动脉冲）</label>
+                    <input class="text-input" id="ppTarget" type="number" min="-2147483648" max="2147483647" step="1" value="1000" inputmode="numeric">
                   </div>
-                  <button class="move-btn" id="movePp" disabled>
-                    <span>执行定位</span>
-                    <small>发送一个 PP 目标</small>
-                  </button>
+                  <div class="position-mode" role="group" aria-label="位置类型">
+                    <label class="position-option"><input type="radio" name="ppPositionMode" value="absolute" checked><span>绝对位置</span></label>
+                    <label class="position-option"><input type="radio" name="ppPositionMode" value="relative"><span>相对位移（正负方向）</span></label>
+                  </div>
+                  <p class="hint" id="ppModeHint">绝对位置：目标是坐标值，方向由当前位置和目标坐标比较决定。</p>
+                  <div class="pp-action-row">
+                    <div class="position-readout">
+                    <div><span>当前位置</span><strong id="actualPosition">0</strong></div>
+                    </div>
+                    <button class="move-btn" id="movePp" disabled>
+                      <span>执行定位</span>
+                      <small>发送一个 PP 目标</small>
+                    </button>
+                  </div>
                   <p class="hint center" id="ppHint">请先打开驱动使能</p>
+                </div>
+                <div id="hmControls" class="mode-controls" hidden>
+                  <div class="motion-status-row">
+                    <span>回零状态</span><strong id="homingState" class="mono">未执行</strong>
+                  </div>
+                  <button class="move-btn" id="startHoming" disabled>
+                    <span>开始回零</span>
+                    <small>发送一次 Homing 启动</small>
+                  </button>
+                  <p class="hint center" id="hmHint">请先打开驱动使能</p>
+                </div>
+                <div id="cspControls" class="mode-controls" hidden>
+                  <div class="pp-target-field">
+                    <label class="field-label" for="cspTarget">目标位置（驱动脉冲）</label>
+                    <input class="text-input" id="cspTarget" type="number" min="-2147483648" max="2147483647" step="1" value="1000" inputmode="numeric">
+                  </div>
+                  <div class="pp-action-row">
+                    <div class="position-readout">
+                      <div><span>当前位置</span><strong id="cspActualPosition">0</strong></div>
+                    </div>
+                    <button class="move-btn" id="moveCsp" disabled>
+                      <span>执行 CSP</span>
+                      <small>按周期发送目标</small>
+                    </button>
+                  </div>
+                  <p class="hint center" id="cspHint">请先打开驱动使能</p>
+                </div>
+                <div id="modeUnavailableControls" class="mode-controls mode-unavailable" hidden>
+                  <p class="hint center">当前驱动未声明此模式的过程数据映射，不能发送运动命令。</p>
                 </div>
                 <button class="stop-btn" id="stopBtn">⏹ 停止运动</button>
               </div>
@@ -136,6 +218,38 @@
       </main>
     </div>
   </div>
+  <dialog class="settings-dialog" id="settingsDialog" aria-labelledby="settingsTitle">
+    <div class="settings-shell">
+      <header class="settings-head">
+        <div>
+          <span class="section-kicker">WORKSPACE SETTINGS</span>
+          <h2 id="settingsTitle">设置</h2>
+        </div>
+        <button class="settings-close" id="closeSettings" type="button" aria-label="关闭设置" title="关闭设置">×</button>
+      </header>
+      <div class="settings-body">
+        <section class="settings-section" aria-labelledby="adapterSettingsTitle">
+          <div class="settings-section-head">
+            <div>
+              <span class="settings-section-kicker">连接</span>
+              <h3 id="adapterSettingsTitle">EtherCAT 网卡</h3>
+              <p class="adapter-current">当前接口：<code id="currentInterface">未选择</code></p>
+            </div>
+            <button class="btn btn-secondary" id="refreshAdapters" type="button">刷新网卡</button>
+          </div>
+          <div class="settings-section-body">
+            <div class="adapter-controls">
+              <select class="adapter-select" id="adapterSelect" aria-label="选择 EtherCAT 网卡" disabled>
+                <option value="">正在检测网卡...</option>
+              </select>
+              <button class="btn btn-primary" id="applyAdapter" type="button" disabled>应用网卡</button>
+            </div>
+            <p class="hint" id="adapterHint">正在等待网卡列表。</p>
+          </div>
+        </section>
+      </div>
+    </div>
+  </dialog>
   <script src="app.js"></script>
 </body>
 </html>

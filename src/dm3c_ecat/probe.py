@@ -7,7 +7,7 @@ import sys
 
 import pysoem
 
-from .device_profiles import DEFAULT_INTERFACE, DriveProfile, get_drive_profile
+from .device_profiles import DriveProfile, get_drive_profile, resolve_default_interface
 
 
 def get_int(obj: object, name: str, default: int = 0) -> int:
@@ -50,7 +50,7 @@ def configure_velocity_pdo(slave: object, profile: DriveProfile) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Read-only pysoem DM3C probe")
-    parser.add_argument("interface", nargs="?", default=DEFAULT_INTERFACE)
+    parser.add_argument("interface", nargs="?")
     parser.add_argument(
         "--cycle-once",
         action="store_true",
@@ -62,11 +62,14 @@ def main() -> int:
         help="write 0x1C12=0x1602 and request SAFE-OP; no motion or OP",
     )
     args = parser.parse_args()
+    interface = args.interface or resolve_default_interface()
+    if not interface:
+        parser.error("multiple or no physical EtherCAT adapters found; specify interface")
 
     master = pysoem.Master()
     try:
-        print(f"Opening: {args.interface}")
-        master.open(args.interface)
+        print(f"Opening: {interface}")
+        master.open(interface)
         count = master.config_init()
         print(f"Slaves: {count}")
         if count <= 0:

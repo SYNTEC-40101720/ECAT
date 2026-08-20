@@ -8,16 +8,24 @@ from collections.abc import Iterable
 
 from websockets.asyncio.server import ServerConnection, serve
 
-from .hmi import DEFAULT_INTERFACE, LOG_BUFFER, Runtime, _LogCapture
+from .device_profiles import enumerate_adapters, resolve_default_interface
+from .hmi import LOG_BUFFER, Runtime, _LogCapture
 from .logging_setup import DEFAULT_LOG_FILE, configure_logging
 
-LOGGER = logging.getLogger("dm3c_ecat.websocket")
+LOGGER = logging.getLogger("ecat_test.websocket")
 
 
 class WebSocketHmi:
     def __init__(self, runtime: Runtime) -> None:
         self.runtime = runtime
         self.clients: set[ServerConnection] = set()
+
+    @staticmethod
+    def adapter_payload() -> list[dict[str, object]]:
+        return [
+            {"name": name, "description": description, "selectable": selectable}
+            for name, description, selectable in enumerate_adapters()
+        ]
 
     async def send(self, connection: ServerConnection, payload: dict[str, object]) -> None:
         await connection.send(json.dumps(payload, ensure_ascii=False))
@@ -36,6 +44,18 @@ class WebSocketHmi:
 
     async def handle_command(self, command: dict[str, object]) -> dict[str, object]:
         name = command.get("command")
+        if name == "list_adapters":
+            return {"type": "adapters", "data": self.adapter_payload()}
+        if name == "select_interface":
+            selected = str(command["interface"])
+            adapters = {
+                adapter_name: selectable
+                for adapter_name, _description, selectable in enumerate_adapters()
+            }
+            if not adapters.get(selected, False):
+                raise ValueError("select a listed physical EtherCAT adapter")
+            self.runtime.select_interface(selected)
+            return {"type": "ack", "command": name, "accepted": True}
         if name == "jog":
             self.runtime.jog(int(command["velocity"]))
         elif name == "set_mode":
@@ -44,10 +64,27 @@ class WebSocketHmi:
             self.runtime.move_pp(
                 int(command["targetPosition"]),
                 int(command["velocity"]),
-                int(command["acceleration"]),
-                int(command["deceleration"]),
+                float(command["accelerationTime"]),
+                float(command["decelerationTime"]),
                 bool(command.get("relative", False)),
             )
+        elif name == "start_homing":
+            self.runtime.start_homing(
+                int(command["method"]),
+                int(command["fastVelocity"]),
+                int(command["slowVelocity"]),
+                float(command["accelerationTime"]),
+                int(command.get("offset", 0)),
+            )
+        elif name == "homing_keepalive":
+            self.runtime.homing_keepalive()
+        elif name == "move_csp":
+            self.runtime.move_csp(
+                int(command["targetPosition"]),
+                float(command["duration"]),
+            )
+        elif name == "csp_keepalive":
+            self.runtime.csp_keepalive()
         elif name == "pp_keepalive":
             self.runtime.pp_keepalive()
         elif name == "stop":
@@ -68,6 +105,7 @@ class WebSocketHmi:
         self.clients.add(connection)
         LOGGER.info("WebSocket client connected: %s", connection.remote_address)
         try:
+            await self.send(connection, {"type": "adapters", "data": self.adapter_payload()})
             await self.send(connection, {"type": "state", "data": self.runtime.snapshot()})
             async for raw_message in connection:
                 try:
@@ -102,7 +140,7 @@ class WebSocketHmi:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="ECAT Test Electron WebSocket backend")
-    parser.add_argument("--interface", default=DEFAULT_INTERFACE)
+    parser.add_argument("--interface")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--log-file", default=str(DEFAULT_LOG_FILE))
@@ -112,8 +150,9 @@ def main() -> int:
     capture.setFormatter(
         logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
     )
-    logging.getLogger("dm3c_ecat").addHandler(capture)
-    runtime = Runtime(args.interface)
+    logging.getLogger("ecat_test").addHandler(capture)
+    interface = args.interface or resolve_default_interface()
+    runtime = Runtime(interface)
     runtime.start()
     gateway = WebSocketHmi(runtime)
     try:
