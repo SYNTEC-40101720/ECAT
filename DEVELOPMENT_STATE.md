@@ -31,6 +31,8 @@
 - 通过 `ecat-probe --configure-velocity-pdo --cycle-once` 进入 SAFE-OP，零输出 WKC 为 `3`
 - PV 低速正反 Jog 和使能已由实机确认
 - PP 模式运行时切换、19/23 bytes 过程镜像、零输出 SAFE-OP、回 OP 和使能已验证；尚未提交真实 PP 目标位置
+- 当前位置反馈来自 TxPDO `0x6064`；使用 `config_overlap_map()` 时周期必须调用 `send_overlap_processdata()`，否则 WKC 仍可能为 3 但 TxPDO 输入全 0
+- PV/PP 动态切换时会重新执行 `config_init()` 重建 FMMU/Sync Manager，确保 `0x6064` 反馈在切换后继续刷新
 
 ## Jog 修复
 

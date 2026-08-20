@@ -342,7 +342,7 @@ class Runtime:
             self.slave.output = packet(
                 controlword, velocity, acceleration, deceleration, mode
             )
-        self.master.send_processdata()
+        self.master.send_overlap_processdata()
         return self.master.receive_processdata(CYCLE_US)
 
     def feedback(self) -> None:
@@ -447,6 +447,15 @@ class Runtime:
         self.master.write_state()
         if self.master.state_check(pysoem.PREOP_STATE, 500_000) != pysoem.PREOP_STATE:
             raise RuntimeError("drive did not return to PRE-OP for mode switch")
+        if self.master.config_init() != 1:
+            raise RuntimeError("expected one EtherCAT slave after mode switch")
+        self.slave = self.master.slaves[0]
+        self.profile = get_drive_profile(self.slave.man, self.slave.id)
+        if self.profile is None:
+            raise RuntimeError(
+                "unsupported EtherCAT slave after mode switch "
+                f"0x{self.slave.man:08X}/0x{self.slave.id:08X}"
+            )
         self.configure_process_data(mode)
         self.request_operational()
         with self.lock:
