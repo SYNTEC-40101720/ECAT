@@ -17,6 +17,7 @@ from .device_profiles import (
     enumerate_adapters,
     get_drive_profile,
     get_remote_io_profile,
+    initialize_remote_io_modules,
     resolve_default_interface,
 )
 from .logging_setup import DEFAULT_LOG_FILE, configure_logging
@@ -723,10 +724,33 @@ class Runtime:
             self.io_input_mask = input_mask
         return input_mask
 
+    def _prepare_io_modules(self) -> None:
+        io_slave = self._io_device()
+        if self.io_profile is None or io_slave is None:
+            return
+        if not self.io_profile.module_init_commands:
+            return
+
+        self.master.read_state()
+        self.master.state = pysoem.PREOP_STATE
+        self.master.write_state()
+        reached = self.master.state_check(pysoem.PREOP_STATE, 200_000)
+        if reached != pysoem.PREOP_STATE:
+            raise RuntimeError(
+                "digital I/O device did not reach PRE-OP for module initialization"
+            )
+        self.io_profile = initialize_remote_io_modules(io_slave, self.io_profile)
+        LOGGER.info(
+            "Digital I/O modules initialized: device=%s modules=%s",
+            self.io_profile.name,
+            ",".join(f"0x{module_id:08X}" for module_id in self.io_profile.expected_module_ids),
+        )
+
     def configure_io_process_data(self) -> None:
         io_slave = self._io_device()
         if self.io_profile is None or io_slave is None:
             raise RuntimeError("digital I/O profile is not available")
+        self._prepare_io_modules()
         io_map_size = (
             self.master.config_overlap_map()
             if self.profile is not None
@@ -876,6 +900,16 @@ class Runtime:
                 "expectedWkc": self.expected_wkc,
                 "ioInputMask": self.io_input_mask,
                 "ioOutputMask": self.io_output_mask,
+                "ioInputMaskHex": (
+                    f"0x{self.io_input_mask:0{(self.io_profile.input_channels + 3) // 4}X}"
+                    if has_digital_io
+                    else "0x0000"
+                ),
+                "ioOutputMaskHex": (
+                    f"0x{self.io_output_mask:0{(self.io_profile.output_channels + 3) // 4}X}"
+                    if has_digital_io
+                    else "0x0000"
+                ),
                 "ioInputChannels": self.io_profile.input_channels if has_digital_io else 0,
                 "ioOutputChannels": self.io_profile.output_channels if has_digital_io else 0,
             }
@@ -1112,6 +1146,17 @@ class Runtime:
         LOGGER.info("EtherCAT reached OP state")
 
     def request_io_operational(self) -> None:
+        self.master.state = pysoem.SAFEOP_STATE
+        self.master.write_state()
+        if self.master.state_check(pysoem.SAFEOP_STATE, 200_000) != pysoem.SAFEOP_STATE:
+            raise RuntimeError("digital I/O device did not reach SAFE-OP")
+        with self.lock:
+            self.io_output_mask = 0
+        self.wkc = self.io_cycle()
+        if self.wkc <= 0:
+            raise RuntimeError(
+                f"digital I/O SAFE-OP process-data exchange failed: {self.wkc}"
+            )
         self.master.state = pysoem.OP_STATE
         self.master.write_state()
         if self.master.state_check(pysoem.OP_STATE, 500_000) != pysoem.OP_STATE:
@@ -1155,6 +1200,8 @@ class Runtime:
             raise RuntimeError("expected at least one EtherCAT slave")
         self._identify_slaves()
         if self.profile is not None:
+            if self.io_profile is not None:
+                self._prepare_io_modules()
             self._read_mode_capabilities()
             self.configure_process_data(self.motion_mode)
             if self.io_profile is not None:
@@ -1177,6 +1224,8 @@ class Runtime:
         if self.master.config_init() <= 0:
             raise RuntimeError("expected at least one EtherCAT slave after mode switch")
         self._identify_slaves()
+        if self.io_profile is not None:
+            self._prepare_io_modules()
         if self.profile is None:
             raise RuntimeError(
                 "unsupported EtherCAT slave after mode switch "

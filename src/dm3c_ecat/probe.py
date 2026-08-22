@@ -11,6 +11,8 @@ from .device_profiles import (
     DriveProfile,
     get_drive_profile,
     get_remote_io_profile,
+    initialize_remote_io_modules,
+    resolve_remote_io_profile,
     resolve_default_interface,
 )
 
@@ -53,6 +55,15 @@ def configure_velocity_pdo(slave: object, profile: DriveProfile) -> None:
     slave.sdo_write(0x1C13, 0, b"\x01")
 
 
+def ensure_preop(master: object) -> None:
+    master.read_state()
+    master.state = pysoem.PREOP_STATE
+    master.write_state()
+    reached = master.state_check(pysoem.PREOP_STATE, 200_000)
+    if reached != pysoem.PREOP_STATE:
+        raise RuntimeError(f"slave(s) did not reach PRE-OP: 0x{reached:04X}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Read-only pysoem DM3C probe")
     parser.add_argument("interface", nargs="?")
@@ -65,6 +76,11 @@ def main() -> int:
         "--configure-velocity-pdo",
         action="store_true",
         help="write 0x1C12=0x1602 and request SAFE-OP; no motion or OP",
+    )
+    parser.add_argument(
+        "--initialize-modular-io",
+        action="store_true",
+        help="write ESI-defined module IDs for a supported modular I/O coupler",
     )
     args = parser.parse_args()
     interface = args.interface or resolve_default_interface()
@@ -86,6 +102,35 @@ def main() -> int:
             for slave in master.slaves
             if get_drive_profile(slave.man, slave.id) is not None
         ]
+        io_entries = []
+        for index, slave in enumerate(master.slaves, start=1):
+            profile = get_remote_io_profile(slave.man, slave.id)
+            if profile is not None:
+                io_entries.append((index, slave, profile))
+        modular_io_entries = [
+            (index, slave, profile)
+            for index, slave, profile in io_entries
+            if profile is not None and profile.module_init_commands
+        ]
+        resolved_io_profiles = {
+            index: profile for index, _slave, profile in io_entries
+        }
+        if modular_io_entries:
+            ensure_preop(master)
+            for index, slave, profile in modular_io_entries:
+                resolved_profile = (
+                    initialize_remote_io_modules(slave, profile)
+                    if args.initialize_modular_io
+                    else resolve_remote_io_profile(slave, profile)
+                )
+                resolved_io_profiles[index] = resolved_profile
+                if args.initialize_modular_io:
+                    print(f"Initialized modular I/O modules: {resolved_profile.name}")
+        if modular_io_entries and not args.initialize_modular_io:
+            print(
+                "WARNING: modular I/O requires --initialize-modular-io before "
+                "process-data testing."
+            )
         if args.configure_velocity_pdo:
             if not drive_entries:
                 raise RuntimeError(
@@ -109,6 +154,13 @@ def main() -> int:
             master.write_state()
             reached_state = master.state_check(pysoem.SAFEOP_STATE, 50_000)
             print(f"Requested SAFE-OP state result: 0x{reached_state:04X}")
+        elif args.cycle_once:
+            master.state = pysoem.SAFEOP_STATE
+            master.write_state()
+            reached_state = master.state_check(pysoem.SAFEOP_STATE, 50_000)
+            print(f"Requested SAFE-OP state result: 0x{reached_state:04X}")
+            if reached_state != pysoem.SAFEOP_STATE:
+                raise RuntimeError("slave(s) did not reach SAFE-OP")
 
         master.read_state()
 
@@ -134,12 +186,13 @@ def main() -> int:
             drive_profile = get_drive_profile(vendor, product)
             io_profile = get_remote_io_profile(vendor, product)
             if io_profile is not None:
+                resolved_profile = resolved_io_profiles.get(index, io_profile)
                 print(
-                    f"  Profile: fixed {io_profile.input_channels}DI/"
-                    f"{io_profile.output_channels}DO RxPDO 0x{io_profile.rx_pdo:04X} "
-                    f"/ TxPDO 0x{io_profile.tx_pdo:04X}"
+                    f"  Profile: {resolved_profile.input_channels}DI/"
+                    f"{resolved_profile.output_channels}DO RxPDO 0x{resolved_profile.rx_pdo:04X} "
+                    f"/ TxPDO 0x{resolved_profile.tx_pdo:04X}"
                 )
-                assigned_rx_bits[index] = io_profile.rx_bytes * 8
+                assigned_rx_bits[index] = resolved_profile.rx_bytes * 8
             elif drive_profile is not None:
                 print(f"  0x1C12:00: {read_sdo_hex(slave, 0x1C12, 0):s}")
                 print(f"  0x1C12:01: {read_sdo_hex(slave, 0x1C12, 1):s}")
@@ -160,6 +213,7 @@ def main() -> int:
                     "assigned PDO layout; do not use this probe for motion commands."
                 )
             supported_profile = get_drive_profile(slave.man, slave.id)
+            supported_profile = supported_profile or resolved_io_profiles.get(index)
             supported_profile = supported_profile or get_remote_io_profile(slave.man, slave.id)
             if supported_profile is not None and (
                 len(slave.output) != supported_profile.rx_bytes
@@ -184,7 +238,10 @@ def main() -> int:
         if args.configure_velocity_pdo:
             print("PDO configuration complete; no OP request, drive enable, or motion command was sent.")
         else:
-            print("Read-only probe complete; no SDO writes or motion commands were sent.")
+            print(
+                "Probe complete; modular I/O initialization may write ESI slot IDs, "
+                "but no OP request or motion command was sent."
+            )
         return 0
     except Exception as exc:
         print(f"Probe failed: {type(exc).__name__}: {exc}", file=sys.stderr)

@@ -27,7 +27,6 @@
     }
   };
 
-  /* ---------- Controls state ---------- */
   const enableSwitch = $("enableSwitch");
   const jogFwd = $("jogFwd");
   const jogRev = $("jogRev");
@@ -60,6 +59,8 @@
     hasDigitalIo: false,
     ioInputMask: 0,
     ioOutputMask: 0,
+    ioInputMaskHex: "0x0000",
+    ioOutputMaskHex: "0x0000",
     ioInputChannels: 0,
     ioOutputChannels: 0,
     ppMoving: false,
@@ -109,8 +110,30 @@
     return snap.state === "SWITCHING" ? requestedMode : snap.motionMode;
   }
 
-  function formatMask(value) {
-    return `0x${(Number(value) & 0xffff).toString(16).padStart(4, "0").toUpperCase()}`;
+  function channelCount(value) {
+    const count = Number(value);
+    return Number.isInteger(count) && count > 0 ? count : 0;
+  }
+
+  function channelRange(prefix, count) {
+    return count > 0
+      ? `${prefix} 00 - ${prefix} ${String(count - 1).padStart(2, "0")}`
+      : "未识别通道";
+  }
+
+  function maskValue(value) {
+    if (typeof value === "bigint") return value;
+    if (typeof value === "string") {
+      try { return BigInt(value); } catch (err) { return 0n; }
+    }
+    const number = Number(value);
+    return Number.isFinite(number) ? BigInt(Math.trunc(number)) : 0n;
+  }
+
+  function formatMask(value, channels) {
+    const width = Math.max(4, Math.ceil(channels / 4));
+    const mask = maskValue(value);
+    return `0x${mask.toString(16).padStart(width, "0").toUpperCase()}`;
   }
 
   function appendChannelText(parent, className, text) {
@@ -121,9 +144,16 @@
     return element;
   }
 
-  function buildIoChannels() {
-    if (ioInputs.childElementCount || ioOutputs.childElementCount) return;
-    for (let channel = 0; channel < 16; channel += 1) {
+  function buildIoChannels(inputChannelTotal, outputChannelTotal) {
+    const inputChannels = channelCount(inputChannelTotal);
+    const outputChannels = channelCount(outputChannelTotal);
+    if (
+      ioInputs.childElementCount === inputChannels
+      && ioOutputs.childElementCount === outputChannels
+    ) return;
+    ioInputs.replaceChildren();
+    ioOutputs.replaceChildren();
+    for (let channel = 0; channel < inputChannels; channel += 1) {
       const inputItem = document.createElement("div");
       inputItem.className = "io-channel";
       inputItem.dataset.channel = String(channel);
@@ -137,7 +167,9 @@
       const inputState = appendChannelText(inputItem, "io-signal-state", "OFF");
       inputState.dataset.state = "off";
       ioInputs.append(inputItem);
+    }
 
+    for (let channel = 0; channel < outputChannels; channel += 1) {
       const outputItem = document.createElement("label");
       outputItem.className = "io-channel io-output-channel";
       outputItem.dataset.channel = String(channel);
@@ -167,14 +199,23 @@
     const isDigitalIo = s.hasDigitalIo ?? (
       s.deviceType === "digital_io" || s.deviceType === "mixed"
     );
-    const inputMask = Number(s.ioInputMask) || 0;
-    const outputMask = Number(s.ioOutputMask) || 0;
+    const inputMask = maskValue(s.ioInputMaskHex ?? s.ioInputMask);
+    const outputMask = maskValue(s.ioOutputMaskHex ?? s.ioOutputMask);
+    const inputChannels = channelCount(s.ioInputChannels);
+    const outputChannels = channelCount(s.ioOutputChannels);
     const ioConnected = s.ioConnected ?? (isDigitalIo && s.connected);
     const outputEnabled = isDigitalIo && ioConnected && s.state !== "ERROR";
-    $("ioInputMask").textContent = formatMask(inputMask);
-    $("ioOutputMask").textContent = formatMask(outputMask);
+    const deviceName = s.ioDevice || s.device || "数字 I/O";
+    buildIoChannels(inputChannels, outputChannels);
+    $("ioPageTitle").textContent = deviceName;
+    $("ioInputMask").textContent = formatMask(inputMask, inputChannels);
+    $("ioOutputMask").textContent = formatMask(outputMask, outputChannels);
+    $("ioInputRange").textContent = channelRange("DI", inputChannels);
+    $("ioOutputRange").textContent = channelRange("DO", outputChannels);
+    ioInputs.setAttribute("aria-label", `${inputChannels} 路数字输入`);
+    ioOutputs.setAttribute("aria-label", `${outputChannels} 路数字输出`);
     $("ioWkc").textContent = `${s.wkc ?? 0} / ${s.expectedWkc ?? 0}`;
-    $("ioDeviceName").textContent = s.ioDevice || s.device || "未识别设备";
+    $("ioDeviceName").textContent = deviceName;
     $("ioMessage").textContent = isDigitalIo
       ? (s.message || "等待数字 I/O 周期。")
       : "当前设备不是数字 I/O。";
@@ -183,7 +224,7 @@
     $("ioOutputBadge").textContent = outputEnabled ? "可控" : "禁止";
     $("ioOutputBadge").dataset.off = outputEnabled ? "0" : "1";
     [...ioInputs.children].forEach((item, channel) => {
-      const active = Boolean(inputMask & (1 << channel));
+      const active = ((inputMask >> BigInt(channel)) & 1n) === 1n;
       const signal = item.querySelector(".io-signal");
       const state = item.querySelector(".io-signal-state");
       signal.dataset.active = active ? "1" : "0";
@@ -193,7 +234,7 @@
     });
     [...ioOutputs.children].forEach((item, channel) => {
       const outputInput = item.querySelector(".io-output-input");
-      outputInput.checked = Boolean(outputMask & (1 << channel));
+      outputInput.checked = ((outputMask >> BigInt(channel)) & 1n) === 1n;
       outputInput.disabled = !outputEnabled;
       item.setAttribute("aria-label", `DO ${String(channel).padStart(2, "0")}`);
     });
@@ -252,7 +293,7 @@
     $("pageSubtitle").textContent = showDrive
       ? "CiA 402 多模式运动测试"
       : showDigitalIo
-        ? "16 路数字输入监视与 16 路数字输出控制"
+        ? `${channelCount(snap.ioInputChannels)} 路数字输入监视与 ${channelCount(snap.ioOutputChannels)} 路数字输出控制`
         : "连接 EtherCAT 设备后可选择操作界面";
     const mode = viewMode();
     const availableModes = Array.isArray(snap.availableModes)
@@ -564,7 +605,6 @@
   }
   ["accel", "decel"].forEach((id) => $(id).addEventListener("change", pushRamp));
   updatePpModeHint();
-  buildIoChannels();
 
   /* ---------- Snapshot rendering ---------- */
   const stateLabels = {

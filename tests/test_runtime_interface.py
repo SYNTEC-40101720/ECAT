@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
-from dm3c_ecat.device_profiles import DRIVE_PROFILES, REMOTE_IO_PROFILES
+from dm3c_ecat.device_profiles import (
+    DRIVE_PROFILES,
+    REMOTE_IO_PROFILES,
+    get_remote_io_profile,
+)
 import dm3c_ecat.hmi as hmi
 
 
@@ -214,6 +218,92 @@ def test_remote_io_rejects_invalid_output_channel(runtime):
 
     with pytest.raises(ValueError, match="0..15"):
         runtime.set_digital_output(16, True)
+
+
+def test_decowell_io_initializes_modules_before_mapping(runtime):
+    io_profile = get_remote_io_profile(0x00444543, 0x00000001)
+    io_slave = MagicMock()
+    io_slave.state = hmi.pysoem.PREOP_STATE
+    io_slave.output = bytearray(io_profile.rx_bytes)
+    io_slave.input = bytearray(io_profile.tx_bytes)
+    io_slave.sdo_read.side_effect = lambda index, subindex: {
+        (0xF050, 0): b"\x14",
+        (0xF050, 1): b"\x7C\x00\x00\x00",
+        (0xF050, 2): b"\x7F\x00\x00\x00",
+    }.get((index, subindex), b"\x00\x00\x00\x00")
+    runtime.io_profile = io_profile
+    runtime.io_slave = io_slave
+    runtime.master.state_check.return_value = hmi.pysoem.PREOP_STATE
+    runtime.master.config_map.return_value = io_profile.io_map_bytes
+
+    runtime.configure_io_process_data()
+
+    assert io_slave.sdo_write.call_args_list == [
+        call(0x8000, 1, b"\x7C\x00"),
+        call(0x8010, 1, b"\x7F\x00"),
+    ]
+    runtime.master.config_map.assert_called_once_with()
+
+
+def test_remote_io_requests_safeop_process_cycle_before_op(runtime):
+    runtime.io_profile = REMOTE_IO_PROFILES[0]
+    runtime.io_slave = MagicMock()
+    runtime.io_slave.output = bytearray(REMOTE_IO_PROFILES[0].rx_bytes)
+    runtime.io_slave.input = bytearray(REMOTE_IO_PROFILES[0].tx_bytes)
+    runtime.expected_wkc = 3
+    runtime.master.state_check.side_effect = [
+        hmi.pysoem.SAFEOP_STATE,
+        hmi.pysoem.OP_STATE,
+    ]
+    runtime.master.receive_processdata.return_value = 3
+    runtime.io_output_mask = 0x8001
+
+    runtime.request_io_operational()
+
+    assert runtime.master.state_check.call_args_list == [
+        call(hmi.pysoem.SAFEOP_STATE, 200_000),
+        call(hmi.pysoem.OP_STATE, 500_000),
+    ]
+    runtime.master.send_processdata.assert_called_once_with()
+    runtime.master.receive_processdata.assert_called_once_with(10_000)
+    assert runtime.io_slave.output == b"\x00\x00"
+
+
+def test_decowell_runtime_expands_repeated_modules_and_handles_high_bits(runtime):
+    io_profile = get_remote_io_profile(0x00444543, 0x00000001)
+    io_slave = MagicMock()
+    io_slave.state = hmi.pysoem.PREOP_STATE
+    io_slave.output = bytearray(8)
+    io_slave.input = bytearray(16)
+    detected = {
+        (0xF050, 0): b"\x20",
+        (0xF050, 1): b"\x7C\x00\x00\x00",
+        (0xF050, 2): b"\x7F\x00\x00\x00",
+        (0xF050, 3): b"\x7C\x00\x00\x00",
+        (0xF050, 4): b"\x7F\x00\x00\x00",
+    }
+    io_slave.sdo_read.side_effect = lambda index, subindex: detected.get(
+        (index, subindex), b"\x00\x00\x00\x00"
+    )
+    runtime.io_profile = io_profile
+    runtime.io_slave = io_slave
+    runtime.master.state_check.return_value = hmi.pysoem.PREOP_STATE
+    runtime.master.config_map.return_value = 24
+    runtime.master.receive_processdata.return_value = 3
+
+    runtime.configure_io_process_data()
+    runtime.state = "OPERATIONAL"
+    runtime.set_digital_output(63, True)
+    io_slave.input = b"\x00\x00\x00\x00\x00\x00\x00\x80" + b"\x00" * 8
+
+    assert runtime.io_cycle() == 3
+    assert bytes(io_slave.output) == b"\x00\x00\x00\x00\x00\x00\x00\x80"
+    assert runtime.read_io_inputs() == 1 << 63
+    snapshot = runtime.snapshot()
+    assert snapshot["ioInputChannels"] == 64
+    assert snapshot["ioOutputChannels"] == 64
+    assert snapshot["ioInputMaskHex"] == "0x8000000000000000"
+    assert snapshot["ioOutputMaskHex"] == "0x8000000000000000"
 
 
 def test_runtime_keeps_drive_and_remote_io_on_the_same_bus(runtime):

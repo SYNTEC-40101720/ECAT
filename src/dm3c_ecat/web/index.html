@@ -235,18 +235,18 @@
           <div class="io-summary">
             <div class="io-summary-copy">
               <span class="section-kicker">DIGITAL I/O</span>
-              <h2 id="ioPageTitle">HAUTO 16DI / 16DO</h2>
+              <h2 id="ioPageTitle">数字 I/O</h2>
               <p id="ioMessage" aria-live="polite">等待数字 I/O 周期。</p>
             </div>
             <div class="io-readout">
               <span>输入掩码</span>
               <strong id="ioInputMask">0x0000</strong>
-              <small>DI 00 - DI 15</small>
+              <small id="ioInputRange">未识别通道</small>
             </div>
             <div class="io-readout">
               <span>输出掩码</span>
               <strong id="ioOutputMask">0x0000</strong>
-              <small>DO 00 - DO 15</small>
+              <small id="ioOutputRange">未识别通道</small>
             </div>
             <div class="io-readout io-readout-status">
               <span>过程数据 WKC</span>
@@ -261,7 +261,7 @@
                 <span class="badge" id="ioInputBadge">等待</span>
               </div>
               <div class="card-body">
-                <div class="io-channel-grid" id="ioInputs" aria-label="16 路数字输入"></div>
+                <div class="io-channel-grid" id="ioInputs" aria-label="数字输入"></div>
                 <p class="hint" id="ioInputHint">输入状态来自 EtherCAT TxPDO。</p>
               </div>
             </div>
@@ -271,7 +271,7 @@
                 <span class="badge" id="ioOutputBadge" data-off="1">禁止</span>
               </div>
               <div class="card-body">
-                <div class="io-channel-grid" id="ioOutputs" aria-label="16 路数字输出"></div>
+                <div class="io-channel-grid" id="ioOutputs" aria-label="数字输出"></div>
                 <p class="hint io-safety" id="ioOutputHint">输出会在页面断开、程序退出或点击停止后归零。</p>
               </div>
             </div>

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pysoem
 
@@ -114,10 +114,61 @@ class RemoteIoProfile:
     tx_bytes: int
     input_channels: int
     output_channels: int
+    expected_module_ids: tuple[int, ...] = ()
+    module_init_commands: tuple[tuple[int, int, bytes], ...] = ()
+    module_slot_stride: int = 0x10
 
     @property
     def io_map_bytes(self) -> int:
         return self.rx_bytes + self.tx_bytes
+
+    def for_detected_modules(
+        self, module_ids: tuple[int, ...]
+    ) -> "RemoteIoProfile":
+        if not self.module_init_commands or not self.expected_module_ids:
+            return self
+        group_size = len(self.expected_module_ids)
+        if (
+            not module_ids
+            or len(module_ids) % group_size != 0
+            or module_ids != self.expected_module_ids * (len(module_ids) // group_size)
+        ):
+            expected = ", ".join(
+                f"0x{module_id:08X}" for module_id in self.expected_module_ids
+            )
+            actual = ", ".join(f"0x{module_id:08X}" for module_id in module_ids) or "none"
+            raise RuntimeError(
+                f"detected modules do not match {self.name}: "
+                f"expected repeated sequence [{expected}], got [{actual}]"
+            )
+
+        group_count = len(module_ids) // group_size
+        if group_count == 1:
+            return self
+        slot_group_stride = group_size * self.module_slot_stride
+        module_init_commands = tuple(
+            (
+                index + group_index * slot_group_stride,
+                subindex,
+                value,
+            )
+            for group_index in range(group_count)
+            for index, subindex, value in self.module_init_commands
+        )
+        name_prefix = self.name.rsplit(" ", 1)[0]
+        return replace(
+            self,
+            name=(
+                f"{name_prefix} {self.input_channels * group_count}DI/"
+                f"{self.output_channels * group_count}DO"
+            ),
+            rx_bytes=self.rx_bytes * group_count,
+            tx_bytes=self.tx_bytes * group_count,
+            input_channels=self.input_channels * group_count,
+            output_channels=self.output_channels * group_count,
+            expected_module_ids=module_ids,
+            module_init_commands=module_init_commands,
+        )
 
 
 DRIVE_PROFILES = (
@@ -175,6 +226,22 @@ REMOTE_IO_PROFILES = (
         16,
         16,
     ),
+    RemoteIoProfile(
+        "DECOWELL EX-203S + EX-313S 32DI/32DO",
+        0x00444543,
+        0x00000001,
+        0x1601,
+        0x1A00,
+        4,
+        8,
+        32,
+        32,
+        expected_module_ids=(0x7C, 0x7F),
+        module_init_commands=(
+            (0x8000, 1, b"\x7C\x00"),
+            (0x8010, 1, b"\x7F\x00"),
+        ),
+    ),
 )
 
 REMOTE_IO_PROFILES_BY_ID = {
@@ -188,3 +255,40 @@ def get_drive_profile(vendor: int, product: int) -> DriveProfile | None:
 
 def get_remote_io_profile(vendor: int, product: int) -> RemoteIoProfile | None:
     return REMOTE_IO_PROFILES_BY_ID.get((vendor, product))
+
+
+def read_detected_module_ids(slave: object) -> tuple[int, ...]:
+    """Read the non-zero module identifiers reported by a modular coupler."""
+    raw_count = slave.sdo_read(0xF050, 0)
+    count = int.from_bytes(raw_count, "little")
+    if not 0 < count <= 64:
+        raise RuntimeError(f"invalid detected module count from 0xF050: {count}")
+
+    module_ids = []
+    for subindex in range(1, count + 1):
+        raw_module_id = slave.sdo_read(0xF050, subindex)
+        module_id = int.from_bytes(raw_module_id, "little")
+        if module_id:
+            module_ids.append(module_id)
+    return tuple(module_ids)
+
+
+def resolve_remote_io_profile(
+    slave: object, profile: RemoteIoProfile
+) -> RemoteIoProfile:
+    if not profile.module_init_commands:
+        return profile
+    return profile.for_detected_modules(read_detected_module_ids(slave))
+
+
+def initialize_remote_io_modules(
+    slave: object, profile: RemoteIoProfile
+) -> RemoteIoProfile:
+    """Apply ESI-defined slot identifiers before mapping a modular I/O device."""
+    if not profile.module_init_commands:
+        return profile
+
+    resolved_profile = resolve_remote_io_profile(slave, profile)
+    for index, subindex, value in resolved_profile.module_init_commands:
+        slave.sdo_write(index, subindex, value)
+    return resolved_profile

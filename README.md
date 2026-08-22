@@ -62,6 +62,14 @@ ecat-probe
 ecat-probe --cycle-once
 ```
 
+DECOWELL 模块化 I/O 需要先写入 ESI 定义的槽位模块 ID，再执行 SAFE-OP 零输出检查：
+
+```powershell
+ecat-probe --initialize-modular-io --cycle-once
+```
+
+该选项会写入模块配置 SDO，但不会请求 OP、使能输出或发送运动命令。
+
 配置速度 PDO 并进入 SAFE-OP，不执行运动：
 
 ```powershell
@@ -96,10 +104,18 @@ ecat-jog <velocity-in-drive-units> <seconds> --confirm-jog
 - 输出初始为零；WebSocket 断开、程序退出或点击停止后输出清零
 - 当前硬件连续周期实测 WKC 会在 `3/3` 与 `1/3` 间变化，但从站保持 OP 且 AL 状态为零；运行时将非正 WKC 视为断链，正 WKC 显示为部分响应并继续刷新 I/O
 
+### DECOWELL 模块化远程 I/O
+
+- DECOWELL EX-1100：Vendor/Product `0x00444543/0x00000001`；现场组合为 EX-203S（模块 ID `0x7C`）+ EX-313S（模块 ID `0x7F`）重复两组
+- 固定 RxPDO `0x1601` / TxPDO `0x1A00`，过程镜像为输出 8 字节、输入 16 字节；HMI 显示并控制 64 路 DI/64 路 DO
+- 映射前读取 `0xF050` 校验模块组合，并按 ESI 原始字节写入 `0x8000:01 = 7c 00`、`0x8010:01 = 7f 00`、`0x8020:01 = 7c 00`、`0x8030:01 = 7f 00`；写入后才执行 PDO 映射
+- Runtime 会根据重复模块组动态扩展过程数据和通道数；模块组合不匹配时拒绝启动
+- 现场零输出验证：SAFE-OP/OP 状态正常、AL=`0x0000`、过程数据 WKC=`3`；尚未接入负载逐路验证实际 DO 动作
+
 ### 伺服与远程 I/O 共存
 
-- Runtime 会扫描同一 EtherCAT 总线上的所有从站，最多绑定一个已支持伺服和一个 HAUTO 远程 I/O；不是用 I/O 替换伺服
-- 只有伺服时显示 CiA 402 手动控制，只有 HAUTO 时显示数字 I/O；两者同时存在时 Electron HMI 同时显示两块面板
+- Runtime 会扫描同一 EtherCAT 总线上的所有从站，最多绑定一个已支持伺服和一个已支持远程 I/O；不是用 I/O 替换伺服
+- 只有伺服时显示 CiA 402 手动控制，只有远程 I/O 时显示数字 I/O；两者同时存在时 Electron HMI 同时显示两块面板
 - 混合总线使用同一个过程数据周期：伺服发送运动 PDO，HAUTO 同时发送 DO 并读取 DI；`set_output` 不依赖伺服是否处于 `ENABLED/JOGGING`
 - 目前实机分别验证过伺服和 HAUTO；伺服+HAUTO 同总线的过程镜像已由双从站模拟测试覆盖，首次现场组合接线仍需按安全门槛低速验证
 

@@ -1,6 +1,6 @@
 # ECAT Test 开发状态
 
-最后更新：2026-08-20
+最后更新：2026-08-22
 
 ## 当前实现
 
@@ -54,12 +54,24 @@
 - WebSocket 命令为 `set_output(channel, enabled)`；输出初始为零，停止、客户端断开和 Runtime 退出时清零
 - 真实网卡验证：从站可进入 OP，AL 状态为 `0x0000`；连续过程数据 WKC 观测为 `3,1,1` 重复，运行时保留正 WKC 的 I/O 状态并显示实际/期望 WKC，`WKC <= 0` 才进入错误并清零输出
 
+## DECOWELL 模块化远程 I/O
+
+- ESI：`ESI/DECOWELL_EX-1100_V1.9.8.xml` 及 Digital_BOOL/UINT/USINT 变体
+- 实际设备：DECOWELL EX-1100；Vendor/Product/Revision：`0x00444543/0x00000001/0x00010001`
+- 现场模块组合：EX-203S 32DI，模块 ID `0x7C`；EX-313S 32DO，模块 ID `0x7F`，两种模块各安装两组
+- 固定 RxPDO `0x1601`、TxPDO `0x1A00`；实际过程镜像为 Rx 8 bytes/64 bits、Tx 16 bytes/128 bits，Runtime 按检测到的模块组动态提供 64DI/64DO
+- 由于 EX-1100 槽位 PDO 是动态组合，映射前必须读取 `0xF050` 校验模块 ID，然后写入 `0x8000:01 = 7c 00`、`0x8010:01 = 7f 00`、`0x8020:01 = 7c 00`、`0x8030:01 = 7f 00`；这里按 ESI `<Data>` 原始字节发送，不能按小端整数发送成 `00 7c`/`00 7f`
+- Runtime 初始化顺序为 PRE-OP -> 模块 SDO 初始化 -> `config_map()` -> SAFE-OP -> 一次零输出过程数据交换 -> OP；直接从 PRE-OP 请求 OP 会失败
+- `ecat-probe --initialize-modular-io --cycle-once` 已验证四个槽位初始化、SAFE-OP、AL=`0x0000` 和零输出 WKC=`3`
+- 正式 Runtime 和 WebSocket HMI 已现场验证：状态 `OPERATIONAL`，snapshot 为 64DI/64DO、WKC=`3/3`，输入输出掩码均为 `0x0000000000000000`；HMI 按 snapshot 动态生成 64 个 DI 与 64 个 DO 控件
+- 当前只验证零输出启动和关闭清零，尚未连接现场负载逐路验证 DO 动作；模块 ID 组合不匹配时 Runtime 会拒绝启动
+
 ## 伺服与远程 I/O 共存
 
-- Runtime 不再要求总线上只有一个从站，会逐个识别支持的 profile；当前限制为最多一个伺服和一个 HAUTO I/O
+- Runtime 不再要求总线上只有一个从站，会逐个识别支持的 profile；当前限制为最多一个伺服和一个已支持远程 I/O
 - `drive_slave` 与 `io_slave` 分开保存，`self.slave` 仅作为单设备和旧测试接口的兼容别名
 - 伺服存在时统一使用 `config_overlap_map()`，一个周期同时写伺服输出和 HAUTO DO，再读取伺服反馈与 HAUTO DI
-- snapshot 返回 `deviceType = mixed`、`hasDrive`、`hasDigitalIo`、`driveDevice`、`ioDevice`；Electron HMI 在混合状态同时显示伺服和 I/O 页面
+- snapshot 返回 `deviceType = mixed`、`hasDrive`、`hasDigitalIo`、`driveDevice`、`ioDevice` 以及 `ioInputChannels`/`ioOutputChannels`；Electron HMI 在混合状态同时显示伺服和 I/O 页面，并按通道数生成 I/O 控件
 - 伺服进入 `ENABLED/JOGGING/PP_MOVING/HOMING/CSP_MOVING` 时仍允许 `set_output`；停止命令会清零 HAUTO 输出
 - 当前混合配置已通过双从站模拟测试；尚未在同一真实总线上同时连接伺服和 HAUTO，现场仍需确认总 WKC、拓扑顺序和安全链路
 
