@@ -10,7 +10,10 @@ import time
 import pysoem
 
 from .device_profiles import DriveProfile, get_drive_profile, resolve_default_interface
+
 CYCLE_US = 10_000
+MAX_VELOCITY = 100_000
+DRIVE_FAULT = 0x0008
 
 
 def output_packet(controlword: int, velocity: int, mode: int = 3) -> bytes:
@@ -21,11 +24,15 @@ def output_packet(controlword: int, velocity: int, mode: int = 3) -> bytes:
     )
 
 
-def statusword_from_overlap_output(slave: object) -> int:
-    feedback = bytes(slave.output)
+def statusword_from_input(slave: object) -> int:
+    feedback = bytes(slave.input)
     if len(feedback) < 4:
         return 0
     return int.from_bytes(feedback[2:4], "little")
+
+
+def statusword_from_overlap_output(slave: object) -> int:
+    return statusword_from_input(slave)
 
 
 def wait_status(
@@ -39,9 +46,13 @@ def wait_status(
     last_status = 0
     for _ in range(100):
         slave.output = output_packet(controlword, 0, mode)
-        master.send_processdata()
-        master.receive_processdata(CYCLE_US)
-        last_status = statusword_from_overlap_output(slave)
+        master.send_overlap_processdata()
+        received = master.receive_processdata(CYCLE_US)
+        if received != master.expected_wkc:
+            raise RuntimeError(f"process-data WKC mismatch: {received}")
+        last_status = statusword_from_input(slave)
+        if last_status & DRIVE_FAULT:
+            raise RuntimeError(f"drive fault during enable, statusword=0x{last_status:04X}")
         if last_status & mask == value:
             return last_status
         time.sleep(CYCLE_US / 1_000_000)
@@ -65,6 +76,8 @@ def main() -> int:
         parser.error("seconds must be greater than 0 and no more than 10")
     if args.velocity == 0:
         parser.error("velocity must be non-zero for a jog")
+    if abs(args.velocity) > MAX_VELOCITY:
+        parser.error(f"velocity must be between -{MAX_VELOCITY} and {MAX_VELOCITY}")
 
     master = pysoem.Master()
     slave = None
@@ -94,7 +107,7 @@ def main() -> int:
                 f"unexpected Rx/Tx bytes (expected {profile.rx_bytes}/{profile.tx_bytes})"
             )
         slave.output = output_packet(0, 0, profile.mode)
-        master.send_processdata()
+        master.send_overlap_processdata()
         if master.receive_processdata(CYCLE_US) != master.expected_wkc:
             raise RuntimeError("initial process-data WKC mismatch")
 
@@ -111,7 +124,7 @@ def main() -> int:
         deadline = time.monotonic() + args.seconds
         while time.monotonic() < deadline:
             slave.output = output_packet(0x000F, args.velocity, profile.mode)
-            master.send_processdata()
+            master.send_overlap_processdata()
             received = master.receive_processdata(CYCLE_US)
             if received != master.expected_wkc:
                 raise RuntimeError(f"process-data WKC mismatch: {received}")
@@ -124,7 +137,7 @@ def main() -> int:
         if slave is not None:
             try:
                 slave.output = output_packet(0x0006, 0, profile.mode if profile else 3)
-                master.send_processdata()
+                master.send_overlap_processdata()
                 master.receive_processdata(CYCLE_US)
             except Exception:
                 pass

@@ -17,6 +17,7 @@ from .device_profiles import (
     enumerate_adapters,
     get_drive_profile,
     get_remote_io_profile,
+    get_welding_profile,
     initialize_remote_io_modules,
     resolve_default_interface,
 )
@@ -31,6 +32,12 @@ from .motion_modes import (
     MODE_VM,
     MOTION_MODES,
     modes_from_capability_word,
+)
+from .welding import (
+    WELDING_MODES,
+    decode_welding_status,
+    welding_mode_value,
+    welding_packet,
 )
 
 LOGGER = logging.getLogger("ecat_test.runtime")
@@ -49,6 +56,14 @@ PP_TARGET_REACHED = 0x0400
 HOMING_START = 0x0010
 HOMING_ATTAINED = 0x1000
 HOMING_ERROR = 0x2000
+CIA402_STATE_MASK = 0x006F
+CIA402_FAULT = 0x0008
+CIA402_ENABLE_STEPS = (
+    (0x0006, 0x0021, "Ready to switch on"),
+    (0x0007, 0x0023, "Switched on"),
+    (0x000F, 0x0027, "Operation enabled"),
+)
+CIA402_STATE_RETRIES = 100
 MIN_POSITION = -(1 << 31)
 MAX_POSITION = (1 << 31) - 1
 VELOCITY_MODES = {MODE_VM, MODE_PV, MODE_CSV}
@@ -144,12 +159,36 @@ class Runtime:
         self.slave = None
         self.drive_slave = None
         self.io_slave = None
+        self.welding_slave = None
         self.profile = None
         self.io_profile = None
+        self.welding_profile = None
         self.io_input_mask = 0
         self.io_output_mask = 0
+        self.welding_command_active = False
+        self.welding_start_welding = False
+        self.welding_robot_ready = False
+        self.welding_mode = WELDING_MODES[0]
+        self.welding_gas_test = False
+        self.welding_wire_inch = False
+        self.welding_wire_retract = False
+        self.welding_touch_enable = False
+        self.welding_job = 0
+        self.welding_current_or_speed = 0
+        self.welding_voltage_or_strength = 0
+        self.welding_heartbeat = 0.0
+        self.welding_arc_success = False
+        self.welding_active = False
+        self.welding_power_fault = False
+        self.welding_communication_ready = False
+        self.welding_fault_code = 0
+        self.welding_touch_success = False
+        self.welding_actual_voltage = 0
+        self.welding_actual_current = 0
+        self.welding_wire_speed = 0
         self.mode_capability_word: int | None = None
         self.lock = threading.Lock()
+        self.process_data_lock = threading.Lock()
         self.running = bool(interface)
         self.command = 0
         self.heartbeat = 0.0
@@ -198,6 +237,16 @@ class Runtime:
         self.actual_position = 0
         self.thread = threading.Thread(target=self.loop, daemon=True)
 
+    def _clear_welding_command_locked(self) -> None:
+        self.welding_command_active = False
+        self.welding_start_welding = False
+        self.welding_robot_ready = False
+        self.welding_gas_test = False
+        self.welding_wire_inch = False
+        self.welding_wire_retract = False
+        self.welding_touch_enable = False
+        self.welding_heartbeat = 0.0
+
     def start(self) -> None:
         if not self.interface:
             with self.lock:
@@ -216,6 +265,7 @@ class Runtime:
     def close(self) -> None:
         LOGGER.info("Runtime close requested")
         self.running = False
+        self.stop()
         if self.thread.is_alive():
             self.thread.join(timeout=2)
 
@@ -234,6 +284,7 @@ class Runtime:
                 or self.homing_active
                 or self.csp_move_pending
                 or self.csp_move_active
+                or self.welding_command_active
                 or self.io_output_mask
             ):
                 raise RuntimeError(
@@ -254,10 +305,22 @@ class Runtime:
             self.slave = None
             self.drive_slave = None
             self.io_slave = None
+            self.welding_slave = None
             self.profile = None
             self.io_profile = None
+            self.welding_profile = None
             self.io_input_mask = 0
             self.io_output_mask = 0
+            self._clear_welding_command_locked()
+            self.welding_arc_success = False
+            self.welding_active = False
+            self.welding_power_fault = False
+            self.welding_communication_ready = False
+            self.welding_fault_code = 0
+            self.welding_touch_success = False
+            self.welding_actual_voltage = 0
+            self.welding_actual_current = 0
+            self.welding_wire_speed = 0
             self.mode_capability_word = None
             self.running = False
             self.state = "STARTING"
@@ -364,8 +427,8 @@ class Runtime:
                 self.last_logged_command = velocity
 
     def set_mode(self, mode: str) -> None:
-        if self.io_profile is not None and self.profile is None:
-            raise RuntimeError("digital I/O device has no motion modes")
+        if self.profile is None and (self.io_profile is not None or self.welding_profile is not None):
+            raise RuntimeError("connected non-motion device has no motion modes")
         if mode not in MOTION_MODES:
             raise ValueError(f"unsupported motion mode: {mode}")
         with self.lock:
@@ -387,6 +450,7 @@ class Runtime:
                 or self.homing_active
                 or self.csp_move_pending
                 or self.csp_move_active
+                or self.welding_command_active
             ):
                 raise RuntimeError("disable the drive before changing mode")
             self.pending_mode = mode
@@ -402,8 +466,8 @@ class Runtime:
         deceleration_time: float,
         relative: bool = False,
     ) -> None:
-        if self.io_profile is not None and self.profile is None:
-            raise RuntimeError("digital I/O device has no motion commands")
+        if self.profile is None and (self.io_profile is not None or self.welding_profile is not None):
+            raise RuntimeError("connected non-motion device has no motion commands")
         if not MIN_POSITION <= target_position <= MAX_POSITION:
             raise ValueError(f"target position must be {MIN_POSITION}..{MAX_POSITION}")
         if not 1 <= velocity <= MAX_VELOCITY:
@@ -452,8 +516,8 @@ class Runtime:
         acceleration_time: float,
         offset: int = 0,
     ) -> None:
-        if self.io_profile is not None and self.profile is None:
-            raise RuntimeError("digital I/O device has no motion commands")
+        if self.profile is None and (self.io_profile is not None or self.welding_profile is not None):
+            raise RuntimeError("connected non-motion device has no motion commands")
         if not -128 <= method <= 127:
             raise ValueError("homing method must be -128..127")
         if not 1 <= fast_velocity <= MAX_VELOCITY:
@@ -507,8 +571,8 @@ class Runtime:
                 self.homing_heartbeat = time.monotonic()
 
     def move_csp(self, target_position: int, duration: float) -> None:
-        if self.io_profile is not None and self.profile is None:
-            raise RuntimeError("digital I/O device has no motion commands")
+        if self.profile is None and (self.io_profile is not None or self.welding_profile is not None):
+            raise RuntimeError("connected non-motion device has no motion commands")
         if not MIN_POSITION <= target_position <= MAX_POSITION:
             raise ValueError(f"target position must be {MIN_POSITION}..{MAX_POSITION}")
         self._validate_ramp_time(duration, "CSP move time")
@@ -578,6 +642,7 @@ class Runtime:
                 or self.homing_active
                 or self.csp_move_pending
                 or self.csp_move_active
+                or self.welding_command_active
             )
             self.command = 0
             self.heartbeat = 0
@@ -597,6 +662,8 @@ class Runtime:
             self.csp_started_at = 0
             self.csp_heartbeat = 0
             outputs_were_set = self.io_output_mask != 0
+            welding_was_active = self.welding_command_active
+            self._clear_welding_command_locked()
             if self.io_profile is not None:
                 self.io_output_mask = 0
             if had_motion or self.last_logged_command != 0:
@@ -604,10 +671,14 @@ class Runtime:
                 self.last_logged_command = 0
             if outputs_were_set:
                 LOGGER.info("Digital outputs cleared")
+            if welding_was_active:
+                LOGGER.info("Welding command cleared")
+        self._transmit_safe_outputs(disable_drive=False)
 
     def disable(self) -> None:
         with self.lock:
             self.enable_requested = False
+            self.enabled = False
             self.command = 0
             self.heartbeat = 0
             self.last_logged_command = 0
@@ -626,7 +697,10 @@ class Runtime:
             self.csp_start_position = self.actual_position
             self.csp_started_at = 0
             self.csp_heartbeat = 0
+            self._clear_welding_command_locked()
+            self.io_output_mask = 0
             LOGGER.info("Drive disable requested")
+        self._transmit_safe_outputs(disable_drive=True)
 
     def stop(self) -> None:
         self.disable()
@@ -635,6 +709,39 @@ class Runtime:
             if self.io_profile is not None:
                 self.io_output_mask = 0
                 self.message = "Digital outputs cleared"
+            if self.welding_profile is not None:
+                self._clear_welding_command_locked()
+                self.message = "Welding command cleared"
+
+    def _transmit_safe_outputs(self, *, disable_drive: bool) -> None:
+        try:
+            validate_wkc = False
+            pure_io = False
+            if self.profile is not None and self._drive_device() is not None:
+                controlword = 0x0006 if disable_drive else 0x000F
+                self.wkc = self.cycle(controlword, 0)
+                validate_wkc = True
+            elif self.welding_profile is not None and self._welding_device() is not None:
+                self.wkc = self.welding_cycle()
+                validate_wkc = True
+            elif self.io_profile is not None and self._io_device() is not None:
+                self.wkc = self.io_cycle()
+                validate_wkc = True
+                pure_io = True
+            if validate_wkc and not self._process_wkc_is_valid(pure_io=pure_io):
+                raise RuntimeError(
+                    f"safe process-data WKC mismatch: {self.wkc}/{self.expected_wkc}"
+                )
+        except Exception as exc:
+            LOGGER.exception("Failed to transmit safe process-data outputs")
+            detail = (
+                "Safe output transmission failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            with self.lock:
+                self.running = False
+                self.state = "ERROR"
+                self.message = f"{self.message}; {detail}" if self.message else detail
 
     def set_digital_output(self, channel: int, enabled: bool) -> None:
         if not isinstance(channel, int):
@@ -655,6 +762,7 @@ class Runtime:
                 "PP_MOVING",
                 "HOMING",
                 "CSP_MOVING",
+                "WELDING",
             }:
                 raise RuntimeError("digital I/O is not operational")
             bit = 1 << channel
@@ -670,9 +778,132 @@ class Runtime:
                 self.io_output_mask,
             )
 
+    def set_welding_command(
+        self,
+        *,
+        start_welding: bool,
+        robot_ready: bool,
+        mode: str | int,
+        gas_test: bool,
+        wire_inch: bool,
+        wire_retract: bool,
+        touch_enable: bool,
+        job: int,
+        current_or_speed: int,
+        voltage_or_strength: int,
+    ) -> None:
+        if self.welding_profile is None:
+            raise RuntimeError("Megmeet welding machine is not connected")
+        if start_welding:
+            raise ValueError("use start_welding after setting welding parameters")
+        mode_value = welding_mode_value(mode)
+        welding_packet(
+            start_welding=start_welding,
+            robot_ready=robot_ready,
+            mode=mode_value,
+            gas_test=gas_test,
+            wire_inch=wire_inch,
+            wire_retract=wire_retract,
+            touch_enable=touch_enable,
+            job=job,
+            current_or_speed=current_or_speed,
+            voltage_or_strength=voltage_or_strength,
+            size=self.welding_profile.rx_bytes,
+        )
+        with self.lock:
+            if self.state not in {
+                "OPERATIONAL",
+                "ENABLED",
+                "JOGGING",
+                "PP_MOVING",
+                "HOMING",
+                "CSP_MOVING",
+                "WELDING",
+            }:
+                raise RuntimeError("welding device is not operational")
+            self.welding_command_active = True
+            self.welding_start_welding = start_welding
+            self.welding_robot_ready = robot_ready
+            self.welding_mode = WELDING_MODES[mode_value]
+            self.welding_gas_test = gas_test
+            self.welding_wire_inch = wire_inch
+            self.welding_wire_retract = wire_retract
+            self.welding_touch_enable = touch_enable
+            self.welding_job = job
+            self.welding_current_or_speed = current_or_speed
+            self.welding_voltage_or_strength = voltage_or_strength
+            self.welding_heartbeat = time.monotonic()
+            self.message = "Welding command active"
+            LOGGER.info(
+                "Welding command set: start=%s ready=%s mode=%s job=%s "
+                "current_or_speed=%s voltage_or_strength=%s",
+                start_welding,
+                robot_ready,
+                self.welding_mode,
+                job,
+                current_or_speed,
+                voltage_or_strength,
+            )
+
+    def start_welding(self) -> None:
+        with self.lock:
+            if self.welding_profile is None:
+                raise RuntimeError("Megmeet welding machine is not connected")
+            if self.state not in {
+                "OPERATIONAL",
+                "ENABLED",
+                "JOGGING",
+                "PP_MOVING",
+                "HOMING",
+                "CSP_MOVING",
+                "WELDING",
+            }:
+                raise RuntimeError("welding device is not operational")
+            if not self.welding_robot_ready:
+                raise RuntimeError("set robot ready before starting welding")
+            if not self.welding_command_active:
+                raise RuntimeError("set welding parameters before starting welding")
+            self._ensure_welding_start_allowed_locked(self.welding_robot_ready)
+            self.welding_command_active = True
+            self.welding_start_welding = True
+            self.welding_heartbeat = time.monotonic()
+            self.message = "Welding start requested"
+            LOGGER.info("Welding start requested")
+
+    def _ensure_welding_start_allowed_locked(self, robot_ready: bool) -> None:
+        if not robot_ready:
+            raise RuntimeError("set robot ready before starting welding")
+        if not self.welding_communication_ready:
+            raise RuntimeError("welding communication is not ready")
+        if self.welding_power_fault:
+            raise RuntimeError("welding power reports a fault")
+        if self.welding_fault_code:
+            raise RuntimeError(
+                f"welding machine reports fault code {self.welding_fault_code}"
+            )
+
+    def stop_welding(self) -> None:
+        with self.lock:
+            had_command = self.welding_command_active or self.welding_start_welding
+            self._clear_welding_command_locked()
+            if had_command:
+                self.message = "Welding command stopped"
+                LOGGER.info("Welding command stopped")
+        self._write_welding_command()
+
+    def welding_keepalive(self) -> None:
+        with self.lock:
+            if self.welding_command_active:
+                self.welding_heartbeat = time.monotonic()
+
     def _drive_device(self):
         return self.drive_slave or (
             self.slave if self.profile is not None else None
+        )
+
+    def _welding_device(self):
+        return self.welding_slave or (
+            self.slave if self.welding_profile is not None else None
         )
 
     def _io_device(self):
@@ -692,6 +923,8 @@ class Runtime:
             total += selected_rx_bytes + self.profile.tx_bytes
         if self.io_profile is not None:
             total += self.io_profile.io_map_bytes
+        if self.welding_profile is not None:
+            total += self.welding_profile.io_map_bytes
         return total
 
     def _write_io_output(self) -> None:
@@ -702,14 +935,70 @@ class Runtime:
             output_mask = self.io_output_mask
         io_slave.output = output_mask.to_bytes(self.io_profile.rx_bytes, "little")
 
-    def io_cycle(self) -> int:
-        if self.io_profile is None or self._io_device() is None:
-            raise RuntimeError("digital I/O process data is not configured")
-        self._write_io_output()
-        if self.profile is not None:
+    def _write_welding_command(self) -> None:
+        welding_slave = self._welding_device()
+        if self.welding_profile is None or welding_slave is None:
+            return
+        with self.lock:
+            command_active = self.welding_command_active
+            start_welding = self.welding_start_welding if command_active else False
+            robot_ready = self.welding_robot_ready if command_active else False
+            mode = self.welding_mode
+            gas_test = self.welding_gas_test if command_active else False
+            wire_inch = self.welding_wire_inch if command_active else False
+            wire_retract = self.welding_wire_retract if command_active else False
+            touch_enable = self.welding_touch_enable if command_active else False
+            job = self.welding_job if command_active else 0
+            current_or_speed = self.welding_current_or_speed if command_active else 0
+            voltage_or_strength = self.welding_voltage_or_strength if command_active else 0
+            size = self.welding_profile.rx_bytes
+        if not command_active:
+            welding_slave.output = bytes(size)
+            return
+        welding_slave.output = welding_packet(
+            start_welding=start_welding,
+            robot_ready=robot_ready,
+            mode=mode,
+            gas_test=gas_test,
+            wire_inch=wire_inch,
+            wire_retract=wire_retract,
+            touch_enable=touch_enable,
+            job=job,
+            current_or_speed=current_or_speed,
+            voltage_or_strength=voltage_or_strength,
+            size=size,
+        )
+
+    def _send_process_data(self) -> None:
+        if self.profile is not None or (
+            self.welding_profile is not None and self.io_profile is not None
+        ):
             self.master.send_overlap_processdata()
         else:
             self.master.send_processdata()
+
+    def io_cycle(self) -> int:
+        with self.process_data_lock:
+            return self._io_cycle_unlocked()
+
+    def _io_cycle_unlocked(self) -> int:
+        if self.io_profile is None or self._io_device() is None:
+            raise RuntimeError("digital I/O process data is not configured")
+        self._write_io_output()
+        self._write_welding_command()
+        self._send_process_data()
+        return self.master.receive_processdata(CYCLE_US)
+
+    def welding_cycle(self) -> int:
+        with self.process_data_lock:
+            return self._welding_cycle_unlocked()
+
+    def _welding_cycle_unlocked(self) -> int:
+        if self.welding_profile is None or self._welding_device() is None:
+            raise RuntimeError("welding process data is not configured")
+        self._write_welding_command()
+        self._write_io_output()
+        self._send_process_data()
         return self.master.receive_processdata(CYCLE_US)
 
     def read_io_inputs(self) -> int:
@@ -723,6 +1012,40 @@ class Runtime:
         with self.lock:
             self.io_input_mask = input_mask
         return input_mask
+
+    def welding_feedback(self) -> None:
+        welding_slave = self._welding_device()
+        if welding_slave is None:
+            return
+        status = decode_welding_status(bytes(welding_slave.input))
+        stop_required = False
+        with self.lock:
+            self.welding_arc_success = status.arc_success
+            self.welding_active = status.welding
+            self.welding_power_fault = status.power_fault
+            self.welding_communication_ready = status.communication_ready
+            self.welding_fault_code = status.fault_code
+            self.welding_touch_success = status.touch_success
+            self.welding_actual_voltage = status.actual_voltage
+            self.welding_actual_current = status.actual_current
+            self.welding_wire_speed = status.wire_speed
+            if self.welding_start_welding and (
+                not status.communication_ready
+                or status.power_fault
+                or status.fault_code != 0
+            ):
+                self._clear_welding_command_locked()
+                self.message = "Welding interlock lost; command stopped"
+                stop_required = True
+        if stop_required:
+            self._write_welding_command()
+            LOGGER.error(
+                "Welding interlock lost: communication_ready=%s "
+                "power_fault=%s fault_code=%s",
+                status.communication_ready,
+                status.power_fault,
+                status.fault_code,
+            )
 
     def _prepare_io_modules(self) -> None:
         io_slave = self._io_device()
@@ -753,10 +1076,11 @@ class Runtime:
         self._prepare_io_modules()
         io_map_size = (
             self.master.config_overlap_map()
-            if self.profile is not None
+            if self.profile is not None or self.welding_profile is not None
             else self.master.config_map()
         )
         self._validate_io_process_data()
+        self._validate_welding_process_data()
         if io_map_size != self._expected_process_image_size():
             raise RuntimeError(
                 f"unexpected digital I/O process image size: {io_map_size} "
@@ -776,6 +1100,47 @@ class Runtime:
             self.expected_wkc,
         )
 
+    def configure_welding_process_data(self) -> None:
+        welding_slave = self._welding_device()
+        if self.welding_profile is None or welding_slave is None:
+            raise RuntimeError("welding profile is not available")
+        io_map_size = (
+            self.master.config_overlap_map()
+            if self.profile is not None or self.io_profile is not None
+            else self.master.config_map()
+        )
+        self._validate_welding_process_data()
+        if self.io_profile is not None:
+            self._validate_io_process_data()
+        if io_map_size != self._expected_process_image_size():
+            raise RuntimeError(
+                f"unexpected welding process image size: {io_map_size} "
+                f"(expected {self._expected_process_image_size()})"
+            )
+        with self.lock:
+            self._clear_welding_command_locked()
+            self.io_input_mask = 0
+            self.io_output_mask = 0
+            self.welding_arc_success = False
+            self.welding_active = False
+            self.welding_power_fault = False
+            self.welding_communication_ready = False
+            self.welding_fault_code = 0
+            self.welding_touch_success = False
+            self.welding_actual_voltage = 0
+            self.welding_actual_current = 0
+            self.welding_wire_speed = 0
+        self.expected_wkc = self.master.expected_wkc
+        LOGGER.info(
+            "Welding PDO configured: device=%s rx_pdo=0x%04X tx_pdo=0x%04X "
+            "io_map=%s bytes expected_wkc=%s",
+            self.welding_profile.name,
+            self.welding_profile.rx_pdo,
+            self.welding_profile.tx_pdo,
+            io_map_size,
+            self.expected_wkc,
+        )
+
     def _validate_io_process_data(self) -> None:
         io_slave = self._io_device()
         if self.io_profile is None or io_slave is None:
@@ -789,22 +1154,69 @@ class Runtime:
                 f"got {actual_sizes[0]}/{actual_sizes[1]}"
             )
 
+    def _validate_welding_process_data(self) -> None:
+        welding_slave = self._welding_device()
+        if self.welding_profile is None or welding_slave is None:
+            return
+        actual_sizes = (len(welding_slave.output), len(welding_slave.input))
+        expected_sizes = (self.welding_profile.rx_bytes, self.welding_profile.tx_bytes)
+        if actual_sizes != expected_sizes:
+            raise RuntimeError(
+                f"{self.welding_profile.name} expected Rx/Tx bytes "
+                f"{expected_sizes[0]}/{expected_sizes[1]}, "
+                f"got {actual_sizes[0]}/{actual_sizes[1]}"
+            )
+
+    def _process_wkc_is_valid(self, *, pure_io: bool = False) -> bool:
+        if (
+            pure_io
+            and self.io_profile is not None
+            and self.io_profile.allow_partial_wkc
+        ):
+            return self.wkc > 0
+        return self.wkc == self.expected_wkc
+
+    def _latch_runtime_error(self, message: str) -> None:
+        with self.lock:
+            self.running = False
+            self.enable_requested = False
+            self.enabled = False
+            self.command = 0
+            self.heartbeat = 0
+            self.last_target_velocity = 0
+            self.last_logged_command = 0
+            self.pp_move_pending = False
+            self.pp_move_active = False
+            self.pp_trigger = False
+            self.pp_halted = True
+            self.pp_heartbeat = 0
+            self.homing_pending = False
+            self.homing_active = False
+            self.homing_trigger = False
+            self.homing_heartbeat = 0
+            self.csp_move_pending = False
+            self.csp_move_active = False
+            self.csp_heartbeat = 0
+            self.io_output_mask = 0
+            self._clear_welding_command_locked()
+            self.state = "ERROR"
+            self.message = message
+
     def run_io_loop(self) -> None:
         while self.running:
             self.wkc = self.io_cycle()
             self.read_io_inputs()
-            if self.wkc <= 0:
-                with self.lock:
-                    self.io_output_mask = 0
-                    self.state = "ERROR"
-                    self.message = (
-                        f"Process-data WKC mismatch: {self.wkc}/{self.expected_wkc}"
-                    )
+            if not self._process_wkc_is_valid(pure_io=True):
+                message = (
+                    f"Process-data WKC mismatch: {self.wkc}/{self.expected_wkc}"
+                )
+                self._latch_runtime_error(message)
                 LOGGER.error(
                     "Digital I/O WKC mismatch: actual=%s expected=%s",
                     self.wkc,
                     self.expected_wkc,
                 )
+                return
             else:
                 with self.lock:
                     if self.state != "ERROR":
@@ -815,6 +1227,73 @@ class Runtime:
                             else f"Digital I/O ready; partial WKC {self.wkc}/{self.expected_wkc}"
                         )
             time.sleep(CYCLE_US / 1_000_000)
+
+    def run_welding_loop(self) -> None:
+        while self.running:
+            with self.lock:
+                welding_command_active = self.welding_command_active
+                welding_heartbeat = self.welding_heartbeat
+            now = time.monotonic()
+            if (
+                welding_command_active
+                and now - welding_heartbeat > HEARTBEAT_TIMEOUT
+            ):
+                self.stop_welding()
+                with self.lock:
+                    self.message = "Watchdog stopped the welding command"
+                LOGGER.warning(
+                    "Welding watchdog stopped command after %.3fs",
+                    HEARTBEAT_TIMEOUT,
+                )
+            self.wkc = self.welding_cycle()
+            self.welding_feedback()
+            if self.io_profile is not None:
+                self.read_io_inputs()
+            if not self._process_wkc_is_valid():
+                message = (
+                    f"Welding process-data WKC mismatch: "
+                    f"{self.wkc}/{self.expected_wkc}"
+                )
+                self._latch_runtime_error(message)
+                LOGGER.error(
+                    "Welding process-data WKC mismatch: actual=%s expected=%s",
+                    self.wkc,
+                    self.expected_wkc,
+                )
+                return
+            else:
+                with self.lock:
+                    if self.state != "ERROR":
+                        self.state = (
+                            "WELDING"
+                            if self.welding_command_active or self.welding_active
+                            else "OPERATIONAL"
+                        )
+                        self.message = (
+                            "Welding command active"
+                            if self.welding_command_active
+                            else "Welding machine ready"
+                        )
+            time.sleep(CYCLE_US / 1_000_000)
+
+    def request_welding_operational(self) -> None:
+        self.master.state = pysoem.SAFEOP_STATE
+        self.master.write_state()
+        if self.master.state_check(pysoem.SAFEOP_STATE, 200_000) != pysoem.SAFEOP_STATE:
+            raise RuntimeError("welding machine did not reach SAFE-OP")
+        with self.lock:
+            self._clear_welding_command_locked()
+            self.io_output_mask = 0
+        self.wkc = self.welding_cycle()
+        if self.wkc <= 0:
+            raise RuntimeError(
+                f"welding SAFE-OP process-data exchange failed: {self.wkc}"
+            )
+        self.master.state = pysoem.OP_STATE
+        self.master.write_state()
+        if self.master.state_check(pysoem.OP_STATE, 500_000) != pysoem.OP_STATE:
+            raise RuntimeError("welding machine did not reach OP")
+        LOGGER.info("EtherCAT welding machine reached OP state")
 
     def snapshot(self) -> dict[str, object]:
         with self.lock:
@@ -834,15 +1313,18 @@ class Runtime:
             )
             has_drive = self.profile is not None
             has_digital_io = self.io_profile is not None
+            has_welding = self.welding_profile is not None
             device_names = [
                 device.name
-                for device in (self.profile, self.io_profile)
+                for device in (self.profile, self.io_profile, self.welding_profile)
                 if device is not None
             ]
             device_name = " + ".join(device_names)
             device_type = (
                 "mixed"
-                if has_drive and has_digital_io
+                if sum((has_drive, has_digital_io, has_welding)) > 1
+                else "welding"
+                if has_welding
                 else "digital_io"
                 if has_digital_io
                 else "drive"
@@ -856,6 +1338,7 @@ class Runtime:
                 "PP_MOVING",
                 "HOMING",
                 "CSP_MOVING",
+                "WELDING",
             }
             return {
                 "state": self.state,
@@ -866,10 +1349,13 @@ class Runtime:
                 "devices": device_names,
                 "hasDrive": has_drive,
                 "hasDigitalIo": has_digital_io,
+                "hasWelding": has_welding,
                 "driveDevice": self.profile.name if self.profile else "",
                 "ioDevice": self.io_profile.name if self.io_profile else "",
+                "weldingDevice": self.welding_profile.name if self.welding_profile else "",
                 "driveConnected": has_drive and self.state in connected_states,
                 "ioConnected": has_digital_io and self.state in connected_states,
+                "weldingConnected": has_welding and self.state in connected_states,
                 "connected": self.state
                 in connected_states,
                 "enabled": self.enabled,
@@ -912,6 +1398,27 @@ class Runtime:
                 ),
                 "ioInputChannels": self.io_profile.input_channels if has_digital_io else 0,
                 "ioOutputChannels": self.io_profile.output_channels if has_digital_io else 0,
+                "weldingCommandActive": self.welding_command_active,
+                "weldingStart": self.welding_start_welding,
+                "weldingRobotReady": self.welding_robot_ready,
+                "weldingMode": self.welding_mode,
+                "weldingModeValue": welding_mode_value(self.welding_mode),
+                "weldingGasTest": self.welding_gas_test,
+                "weldingWireInch": self.welding_wire_inch,
+                "weldingWireRetract": self.welding_wire_retract,
+                "weldingTouchEnable": self.welding_touch_enable,
+                "weldingJob": self.welding_job,
+                "weldingCurrentOrSpeed": self.welding_current_or_speed,
+                "weldingVoltageOrStrength": self.welding_voltage_or_strength,
+                "weldingArcSuccess": self.welding_arc_success,
+                "weldingActive": self.welding_active,
+                "weldingPowerFault": self.welding_power_fault,
+                "weldingCommunicationReady": self.welding_communication_ready,
+                "weldingFaultCode": self.welding_fault_code,
+                "weldingTouchSuccess": self.welding_touch_success,
+                "weldingActualVoltage": self.welding_actual_voltage,
+                "weldingActualCurrent": self.welding_actual_current,
+                "weldingWireSpeed": self.welding_wire_speed,
             }
 
     def _next_csp_target(self) -> int:
@@ -936,6 +1443,10 @@ class Runtime:
             return target
 
     def cycle(self, controlword: int, velocity: int = 0) -> int:
+        with self.process_data_lock:
+            return self._cycle_unlocked(controlword, velocity)
+
+    def _cycle_unlocked(self, controlword: int, velocity: int = 0) -> int:
         drive_slave = self._drive_device()
         if self.profile is None or drive_slave is None:
             raise RuntimeError("drive process data is not configured")
@@ -999,6 +1510,7 @@ class Runtime:
             )
         else:
             raise RuntimeError(f"no packet encoder for {mode.upper()} mode")
+        self._write_welding_command()
         self._write_io_output()
         self.master.send_overlap_processdata()
         return self.master.receive_processdata(CYCLE_US)
@@ -1017,8 +1529,9 @@ class Runtime:
 
     def enable_drive(self) -> None:
         LOGGER.info("CiA 402 enable sequence started")
-        for controlword in (0x0006, 0x0007, 0x000F):
-            for _ in range(5):
+        self.enabled = False
+        for controlword, expected_state, state_name in CIA402_ENABLE_STEPS:
+            for _ in range(CIA402_STATE_RETRIES):
                 self.wkc = self.cycle(controlword, 0)
                 self.feedback()
                 if self.wkc != self.expected_wkc:
@@ -1026,7 +1539,18 @@ class Runtime:
                     raise RuntimeError(
                         f"enable process-data WKC mismatch: {self.wkc}"
                     )
+                if self.statusword & CIA402_FAULT:
+                    raise RuntimeError(
+                        f"drive fault during enable, statusword=0x{self.statusword:04X}"
+                    )
+                if self.statusword & CIA402_STATE_MASK == expected_state:
+                    break
                 time.sleep(CYCLE_US / 1_000_000)
+            else:
+                raise RuntimeError(
+                    f"CiA 402 enable timeout waiting for {state_name}, "
+                    f"statusword=0x{self.statusword:04X}"
+                )
         self.enabled = True
         LOGGER.info("CiA 402 enable sequence completed")
 
@@ -1046,7 +1570,7 @@ class Runtime:
 
     def available_modes(self) -> tuple[str, ...]:
         if self.profile is None:
-            return () if self.io_profile is not None else MOTION_MODES
+            return () if self.io_profile is not None or self.welding_profile is not None else MOTION_MODES
         if self.mode_capability_word is None:
             return self.profile.supported_modes
         return modes_from_capability_word(
@@ -1167,12 +1691,15 @@ class Runtime:
         self.slave = None
         self.drive_slave = None
         self.io_slave = None
+        self.welding_slave = None
         self.profile = None
         self.io_profile = None
+        self.welding_profile = None
         unsupported: list[str] = []
         for candidate in self.master.slaves:
             drive_profile = get_drive_profile(candidate.man, candidate.id)
             io_profile = get_remote_io_profile(candidate.man, candidate.id)
+            welding_profile = get_welding_profile(candidate.man, candidate.id)
             identity = f"0x{candidate.man:08X}/0x{candidate.id:08X}"
             if drive_profile is not None:
                 if self.drive_slave is not None:
@@ -1184,24 +1711,38 @@ class Runtime:
                     raise RuntimeError("multiple supported digital I/O devices are not supported")
                 self.io_slave = candidate
                 self.io_profile = io_profile
+            elif welding_profile is not None:
+                if self.welding_slave is not None:
+                    raise RuntimeError(
+                        "multiple supported Megmeet welding machines are not supported"
+                    )
+                self.welding_slave = candidate
+                self.welding_profile = welding_profile
             else:
                 unsupported.append(identity)
         if unsupported:
             raise RuntimeError(
                 "unsupported EtherCAT slave(s): " + ", ".join(unsupported)
             )
-        if self.drive_slave is None and self.io_slave is None:
+        if (
+            self.drive_slave is None
+            and self.io_slave is None
+            and self.welding_slave is None
+        ):
             raise RuntimeError("no supported EtherCAT device found")
-        self.slave = self.drive_slave or self.io_slave
+        self.slave = self.drive_slave or self.io_slave or self.welding_slave
 
     def configure(self) -> None:
         LOGGER.info("Configuring EtherCAT master")
         if self.master.config_init() <= 0:
-            raise RuntimeError("expected at least one EtherCAT slave")
+            raise RuntimeError(
+                "no EtherCAT slave detected on the selected interface"
+            )
         self._identify_slaves()
         if self.profile is not None:
             if self.io_profile is not None:
                 self._prepare_io_modules()
+            self._validate_welding_process_data()
             self._read_mode_capabilities()
             self.configure_process_data(self.motion_mode)
             if self.io_profile is not None:
@@ -1210,6 +1751,12 @@ class Runtime:
                     self.io_input_mask = 0
                     self.io_output_mask = 0
             self.request_operational()
+            return
+        if self.welding_profile is not None:
+            if self.io_profile is not None:
+                self._prepare_io_modules()
+            self.configure_welding_process_data()
+            self.request_welding_operational()
             return
         if self.io_profile is not None:
             self.configure_io_process_data()
@@ -1256,6 +1803,11 @@ class Runtime:
             self.master.open(self.interface)
             LOGGER.info("EtherCAT interface opened")
             self.configure()
+            if self.profile is None and self.welding_profile is not None:
+                with self.lock:
+                    self.state, self.message = "OPERATIONAL", "Welding machine ready"
+                self.run_welding_loop()
+                return
             if self.profile is None and self.io_profile is not None:
                 with self.lock:
                     self.state, self.message = "OPERATIONAL", "Digital I/O ready"
@@ -1288,6 +1840,8 @@ class Runtime:
                     csp_move_pending = self.csp_move_pending
                     csp_move_active = self.csp_move_active
                     csp_heartbeat = self.csp_heartbeat
+                    welding_command_active = self.welding_command_active
+                    welding_heartbeat = self.welding_heartbeat
                 now = time.monotonic()
                 if command and now - heartbeat > HEARTBEAT_TIMEOUT:
                     self.stop_motion()
@@ -1328,6 +1882,17 @@ class Runtime:
                     )
                     with self.lock:
                         self.message = "CSP watchdog stopped the drive"
+                if (
+                    welding_command_active
+                    and now - welding_heartbeat > HEARTBEAT_TIMEOUT
+                ):
+                    self.stop_welding()
+                    LOGGER.warning(
+                        "Welding watchdog stopped command after %.3fs",
+                        HEARTBEAT_TIMEOUT,
+                    )
+                    with self.lock:
+                        self.message = "Watchdog stopped the welding command"
                 with self.lock:
                     enable_requested = self.enable_requested
                 pp_trigger_sent = False
@@ -1383,20 +1948,31 @@ class Runtime:
                 else:
                     self.wkc = self.cycle(0x000F, 0)
                 self.feedback()
+                if self.welding_profile is not None:
+                    self.welding_feedback()
                 if self.io_profile is not None:
                     self.read_io_inputs()
                 if self.wkc != self.expected_wkc:
-                    self.disable()
-                    self.enabled = False
-                    with self.lock:
-                        self.io_output_mask = 0
-                        self.state = "ERROR"
-                        self.message = (
-                            f"Process-data WKC mismatch: {self.wkc}/"
-                            f"{self.expected_wkc}"
-                        )
+                    message = (
+                        f"Process-data WKC mismatch: {self.wkc}/"
+                        f"{self.expected_wkc}"
+                    )
+                    self._latch_runtime_error(message)
                     LOGGER.error("Process-data WKC mismatch: actual=%s expected=%s", self.wkc, self.expected_wkc)
-                    continue
+                    return
+                if self.statusword & CIA402_FAULT:
+                    fault_statusword = self.statusword
+                    message = (
+                        "Drive fault reported by statusword: "
+                        f"0x{fault_statusword:04X}"
+                    )
+                    self._latch_runtime_error(message)
+                    LOGGER.error(
+                        "Drive fault reported: statusword=0x%04X error=0x%04X",
+                        fault_statusword,
+                        self.error,
+                    )
+                    return
                 if motion_mode == MODE_PP:
                     with self.lock:
                         if self.pp_move_active and not pp_trigger_sent and not self.pp_trigger:
@@ -1431,26 +2007,50 @@ class Runtime:
                         self.state = "CSP_MOVING"
                     elif self.motion_mode in VELOCITY_MODES and command:
                         self.state = "JOGGING"
+                    elif self.welding_profile is not None and (
+                        self.welding_command_active or self.welding_active
+                    ):
+                        self.state = "WELDING"
                     else:
                         self.state = "ENABLED" if self.enabled else "OPERATIONAL"
                 time.sleep(CYCLE_US / 1_000_000)
         except Exception as exc:
             LOGGER.exception("Runtime loop failed")
             with self.lock:
+                self.running = False
                 self.state, self.message = "ERROR", f"{type(exc).__name__}: {exc}"
         finally:
             try:
                 if self.profile is not None and self._drive_device() is not None:
                     with self.lock:
                         self.io_output_mask = 0
-                    self.cycle(0x0006, 0)
+                        self._clear_welding_command_locked()
+                    self._transmit_safe_outputs(disable_drive=True)
+                elif self.welding_profile is not None and self._welding_device() is not None:
+                    with self.lock:
+                        self._clear_welding_command_locked()
+                        self.io_output_mask = 0
+                    self._transmit_safe_outputs(disable_drive=False)
                 elif self.io_profile is not None and self._io_device() is not None:
                     with self.lock:
                         self.io_output_mask = 0
-                    self.io_cycle()
-            except Exception:
-                pass
-            self.master.close()
+                    self._transmit_safe_outputs(disable_drive=False)
+            except Exception as exc:
+                LOGGER.exception("Failed to transmit final safe outputs")
+                detail = f"Final safe output failed: {type(exc).__name__}: {exc}"
+                with self.lock:
+                    self.running = False
+                    self.state = "ERROR"
+                    self.message = f"{self.message}; {detail}" if self.message else detail
+            try:
+                self.master.close()
+            except Exception as exc:
+                LOGGER.exception("Failed to close EtherCAT master")
+                detail = f"Master close failed: {type(exc).__name__}: {exc}"
+                with self.lock:
+                    self.running = False
+                    self.state = "ERROR"
+                    self.message = f"{self.message}; {detail}" if self.message else detail
             LOGGER.info("EtherCAT interface closed")
 
 

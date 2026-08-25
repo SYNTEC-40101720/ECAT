@@ -7,6 +7,7 @@ import pytest
 from dm3c_ecat.device_profiles import (
     DRIVE_PROFILES,
     REMOTE_IO_PROFILES,
+    WELDING_PROFILES,
     get_remote_io_profile,
 )
 import dm3c_ecat.hmi as hmi
@@ -32,6 +33,81 @@ def test_enable_is_rejected_without_interface(monkeypatch):
         runtime.enable()
 
 
+def test_enable_drive_waits_for_each_cia402_state(runtime, monkeypatch):
+    statuses = iter((0x0000, 0x0021, 0x0023, 0x0027))
+    runtime.expected_wkc = 3
+    runtime.cycle = MagicMock(return_value=3)
+    runtime.feedback = MagicMock(
+        side_effect=lambda: setattr(runtime, "statusword", next(statuses))
+    )
+    monkeypatch.setattr(hmi.time, "sleep", lambda _delay: None)
+
+    runtime.enable_drive()
+
+    assert runtime.enabled is True
+    assert [item.args[0] for item in runtime.cycle.call_args_list] == [
+        0x0006,
+        0x0006,
+        0x0007,
+        0x000F,
+    ]
+
+
+def test_enable_drive_times_out_if_state_never_changes(runtime, monkeypatch):
+    runtime.expected_wkc = 3
+    runtime.cycle = MagicMock(return_value=3)
+    runtime.feedback = MagicMock(
+        side_effect=lambda: setattr(runtime, "statusword", 0x0000)
+    )
+    monkeypatch.setattr(hmi.time, "sleep", lambda _delay: None)
+
+    with pytest.raises(RuntimeError, match="Ready to switch on"):
+        runtime.enable_drive()
+
+    assert runtime.enabled is False
+    assert runtime.cycle.call_count == hmi.CIA402_STATE_RETRIES
+
+
+def test_enable_drive_rejects_fault_statusword(runtime):
+    runtime.expected_wkc = 3
+    runtime.cycle = MagicMock(return_value=3)
+    runtime.feedback = MagicMock(
+        side_effect=lambda: setattr(runtime, "statusword", hmi.CIA402_FAULT)
+    )
+
+    with pytest.raises(RuntimeError, match="drive fault during enable"):
+        runtime.enable_drive()
+
+    assert runtime.enabled is False
+    runtime.cycle.assert_called_once_with(0x0006, 0)
+
+
+def test_runtime_loop_latches_drive_fault(runtime):
+    runtime.profile = DRIVE_PROFILES[0]
+    runtime.drive_slave = MagicMock()
+    runtime.expected_wkc = 3
+    runtime.running = True
+    runtime.enable_requested = True
+    runtime.enabled = True
+    runtime.configure = MagicMock()
+
+    def finish_cycle(_controlword, _velocity):
+        runtime.running = False
+        return 3
+
+    runtime.cycle = MagicMock(side_effect=finish_cycle)
+    runtime.feedback = MagicMock(
+        side_effect=lambda: setattr(runtime, "statusword", hmi.CIA402_FAULT)
+    )
+
+    runtime.loop()
+
+    assert runtime.enable_requested is False
+    assert runtime.enabled is False
+    assert runtime.state == "ERROR"
+    assert runtime.message == "Drive fault reported by statusword: 0x0008"
+
+
 def test_select_interface_restarts_runtime(monkeypatch):
     monkeypatch.setattr(hmi.pysoem, "Master", lambda: MagicMock())
     runtime = hmi.Runtime(None)
@@ -42,6 +118,15 @@ def test_select_interface_restarts_runtime(monkeypatch):
     assert runtime.interface == r"\\Device\NPF_{PHYSICAL}"
     assert runtime.state == "STARTING"
     runtime.start.assert_called_once_with()
+
+
+def test_configure_reports_missing_slave_without_affecting_adapter_selection(runtime):
+    runtime.master.config_init.return_value = 0
+
+    with pytest.raises(
+        RuntimeError, match="no EtherCAT slave detected on the selected interface"
+    ):
+        runtime.configure()
 
 
 def test_select_interface_is_rejected_while_enabled(monkeypatch):
@@ -206,10 +291,12 @@ def test_remote_io_reads_inputs_and_writes_output_bits(
 
     runtime.stop_motion()
     assert runtime.io_output_mask == 0
+    assert process_master.normal_send_count == 2
 
     runtime.set_digital_output(0, True)
     runtime.stop()
     assert runtime.io_output_mask == 0
+    assert process_master.normal_send_count == 3
 
 
 def test_remote_io_rejects_invalid_output_channel(runtime):
@@ -218,6 +305,18 @@ def test_remote_io_rejects_invalid_output_channel(runtime):
 
     with pytest.raises(ValueError, match="0..15"):
         runtime.set_digital_output(16, True)
+
+
+def test_partial_wkc_is_only_allowed_for_hauto_pure_io(runtime):
+    runtime.expected_wkc = 3
+    runtime.wkc = 1
+
+    runtime.io_profile = REMOTE_IO_PROFILES[0]
+    assert runtime._process_wkc_is_valid(pure_io=True) is True
+    assert runtime._process_wkc_is_valid() is False
+
+    runtime.io_profile = REMOTE_IO_PROFILES[1]
+    assert runtime._process_wkc_is_valid(pure_io=True) is False
 
 
 def test_decowell_io_initializes_modules_before_mapping(runtime):
@@ -344,3 +443,116 @@ def test_runtime_keeps_drive_and_remote_io_on_the_same_bus(runtime):
     assert bytes(io_slave.output) == b"\x01\x00"
     runtime.read_io_inputs()
     assert runtime.master.send_overlap_processdata.called
+
+
+def test_drive_loop_latches_wkc_loss_and_transmits_final_safe_frame(runtime):
+    runtime.profile = DRIVE_PROFILES[0]
+    runtime.drive_slave = MagicMock()
+    runtime.configure = MagicMock()
+    runtime.expected_wkc = 3
+    runtime.cycle = MagicMock(side_effect=[2, 3])
+    runtime.feedback = MagicMock()
+    runtime.master.close = MagicMock()
+
+    runtime.loop()
+
+    assert runtime.running is False
+    assert runtime.enabled is False
+    assert runtime.enable_requested is False
+    assert runtime.state == "ERROR"
+    assert runtime.message == "Process-data WKC mismatch: 2/3"
+    assert runtime.cycle.call_args_list == [call(0x0006, 0), call(0x0006, 0)]
+    runtime.master.close.assert_called_once_with()
+
+
+def test_pure_welding_loop_rejects_partial_wkc(runtime):
+    runtime.welding_profile = WELDING_PROFILES[0]
+    runtime.welding_slave = MagicMock()
+    runtime.configure = MagicMock()
+    runtime.expected_wkc = 3
+    runtime.welding_cycle = MagicMock(side_effect=[1, 3])
+    runtime.welding_feedback = MagicMock()
+    runtime.master.close = MagicMock()
+
+    runtime.loop()
+
+    assert runtime.running is False
+    assert runtime.welding_command_active is False
+    assert runtime.state == "ERROR"
+    assert runtime.message == "Welding process-data WKC mismatch: 1/3"
+    assert runtime.welding_cycle.call_count == 2
+    runtime.master.close.assert_called_once_with()
+
+
+def test_pure_io_loop_latches_wkc_loss(runtime):
+    runtime.io_profile = REMOTE_IO_PROFILES[1]
+    runtime.io_slave = MagicMock()
+    runtime.configure = MagicMock()
+    runtime.expected_wkc = 3
+    runtime.io_cycle = MagicMock(side_effect=[0, 3])
+    runtime.read_io_inputs = MagicMock()
+    runtime.master.close = MagicMock()
+
+    runtime.loop()
+
+    assert runtime.running is False
+    assert runtime.io_output_mask == 0
+    assert runtime.state == "ERROR"
+    assert runtime.message == "Process-data WKC mismatch: 0/3"
+    assert runtime.io_cycle.call_count == 2
+    runtime.master.close.assert_called_once_with()
+
+
+def test_hauto_pure_io_loop_accepts_positive_partial_wkc(runtime):
+    runtime.io_profile = REMOTE_IO_PROFILES[0]
+    runtime.io_slave = MagicMock()
+    runtime.configure = MagicMock()
+    runtime.expected_wkc = 3
+
+    def complete_one_cycle() -> int:
+        runtime.running = False
+        return 1
+
+    runtime.io_cycle = MagicMock(side_effect=complete_one_cycle)
+    runtime.read_io_inputs = MagicMock()
+    runtime.master.close = MagicMock()
+
+    runtime.loop()
+
+    assert runtime.state == "OPERATIONAL"
+    assert runtime.message == "Digital I/O ready; partial WKC 1/3"
+    assert runtime.io_cycle.call_count == 2
+    runtime.master.close.assert_called_once_with()
+
+
+def test_safe_output_failure_latches_diagnostic_error(runtime):
+    runtime.profile = DRIVE_PROFILES[0]
+    runtime.drive_slave = MagicMock()
+    runtime.state = "ENABLED"
+    runtime.command = 100
+    runtime.expected_wkc = 3
+    runtime.cycle = MagicMock(side_effect=RuntimeError("transport down"))
+
+    runtime.stop_motion()
+
+    assert runtime.running is False
+    assert runtime.state == "ERROR"
+    assert "Safe output transmission failed" in runtime.message
+    assert "transport down" in runtime.message
+
+
+def test_runtime_thread_stops_after_cycle_exception(runtime):
+    runtime.profile = DRIVE_PROFILES[0]
+    runtime.drive_slave = MagicMock()
+    runtime.configure = MagicMock()
+    runtime.cycle = MagicMock(side_effect=RuntimeError("cycle aborted"))
+    runtime.master.close = MagicMock()
+
+    runtime.start()
+    runtime.thread.join(timeout=1)
+
+    assert runtime.thread.is_alive() is False
+    assert runtime.running is False
+    assert runtime.state == "ERROR"
+    assert "cycle aborted" in runtime.message
+    runtime.master.close.assert_called_once_with()

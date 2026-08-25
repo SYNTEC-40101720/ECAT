@@ -43,7 +43,9 @@
   const ioOutputs = $("ioOutputs");
   const drivePage = document.querySelector(".control-page");
   const ioPage = $("ioPage");
+  const weldingPage = $("weldingPage");
   const viewButtons = [...document.querySelectorAll(".nav-item[data-view]")];
+  const weldingModeButtons = [...document.querySelectorAll(".welding-mode-option")];
   const themeStorageKey = "ecat-test-theme";
   let activeView = "drive";
   let snap = {
@@ -57,6 +59,7 @@
     deviceType: "",
     hasDrive: false,
     hasDigitalIo: false,
+    hasWelding: false,
     ioInputMask: 0,
     ioOutputMask: 0,
     ioInputMaskHex: "0x0000",
@@ -66,8 +69,30 @@
     ppMoving: false,
     homingActive: false,
     cspMoving: false,
+    weldingCommandActive: false,
+    weldingStart: false,
+    weldingRobotReady: false,
+    weldingMode: "dc_unified",
+    weldingGasTest: false,
+    weldingWireInch: false,
+    weldingWireRetract: false,
+    weldingTouchEnable: false,
+    weldingJob: 0,
+    weldingCurrentOrSpeed: 0,
+    weldingVoltageOrStrength: 0,
+    weldingArcSuccess: false,
+    weldingActive: false,
+    weldingPowerFault: false,
+    weldingCommunicationReady: false,
+    weldingFaultCode: 0,
+    weldingTouchSuccess: false,
+    weldingActualVoltage: 0,
+    weldingActualCurrent: 0,
+    weldingWireSpeed: 0,
   };
   let adapters = [];
+  let adapterListReceived = false;
+  let requestedWeldingMode = "dc_unified";
 
   function readThemePreference() {
     try {
@@ -240,18 +265,108 @@
     });
   }
 
-  function updateNavigation(hasDrive, hasDigitalIo) {
-    const available = { drive: hasDrive, io: hasDigitalIo };
+  function renderWelding(s) {
+    const hasWelding = s.hasWelding ?? (
+      s.deviceType === "welding" || s.deviceType === "mixed"
+    );
+    const weldingConnected = s.weldingConnected ?? (hasWelding && s.connected);
+    const deviceName = s.weldingDevice || (hasWelding ? s.device : "麦格米特焊机");
+    const communicationReady = Boolean(s.weldingCommunicationReady);
+    const faultCode = Number.isFinite(Number(s.weldingFaultCode))
+      ? Number(s.weldingFaultCode)
+      : 0;
+    const mode = s.weldingCommandActive
+      ? (s.weldingMode || requestedWeldingMode)
+      : requestedWeldingMode;
+    if (s.weldingCommandActive && s.weldingMode) requestedWeldingMode = s.weldingMode;
+    const weldingInProgress = Boolean(s.weldingStart || s.weldingActive);
+    const commandEnabled = hasWelding
+      && weldingConnected
+      && s.state !== "ERROR"
+      && s.state !== "SWITCHING";
+    $("weldingPageTitle").textContent = deviceName;
+    $("weldingDeviceName").textContent = deviceName;
+    $("weldingMessage").textContent = hasWelding
+      ? (s.message || "等待焊机过程数据周期。")
+      : "当前设备不是焊机。";
+    $("weldingCommunication").textContent = communicationReady ? "就绪" : "未就绪";
+    $("weldingCommunication").dataset.state = communicationReady ? "on" : "off";
+    $("weldingWkc").textContent = `${s.wkc ?? 0} / ${s.expectedWkc ?? 0}`;
+    $("weldingFaultSummary").textContent = String(faultCode);
+    $("weldingArcSummary").textContent = s.weldingArcSuccess ? "起弧成功" : "等待起弧";
+    $("weldingCommandBadge").textContent = s.weldingCommandActive ? "活动" : "待命";
+    $("weldingCommandBadge").dataset.off = s.weldingCommandActive ? "0" : "1";
+    $("weldingFeedbackBadge").textContent = weldingConnected ? "实时" : "等待";
+    $("weldingFeedbackBadge").dataset.off = weldingConnected ? "0" : "1";
+    $("weldingArcSuccess").textContent = s.weldingArcSuccess ? "是" : "否";
+    $("weldingActive").textContent = s.weldingActive ? "焊接中" : "未焊接";
+    $("weldingPowerFault").textContent = s.weldingPowerFault ? "故障" : "无";
+    $("weldingCommunicationReady").textContent = communicationReady ? "是" : "否";
+    $("weldingTouchSuccess").textContent = s.weldingTouchSuccess ? "是" : "否";
+    $("weldingFaultCode").textContent = String(faultCode);
+    $("weldingActualVoltage").textContent = String(s.weldingActualVoltage ?? 0);
+    $("weldingActualCurrent").textContent = String(s.weldingActualCurrent ?? 0);
+    $("weldingWireSpeed").textContent = String(s.weldingWireSpeed ?? 0);
+    weldingModeButtons.forEach((button) => {
+      const active = button.dataset.weldingMode === mode;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", String(active));
+      button.disabled = !commandEnabled || weldingInProgress;
+    });
+    const controls = [
+      ["weldingRobotReady", Boolean(s.weldingRobotReady)],
+      ["weldingGasTest", Boolean(s.weldingGasTest)],
+      ["weldingWireInch", Boolean(s.weldingWireInch)],
+      ["weldingWireRetract", Boolean(s.weldingWireRetract)],
+      ["weldingTouchEnable", Boolean(s.weldingTouchEnable)],
+    ];
+    controls.forEach(([id, checked]) => {
+      const control = $(id);
+      if (document.activeElement !== control) control.checked = checked;
+      control.disabled = !commandEnabled || weldingInProgress;
+    });
+    [
+      ["weldingJob", s.weldingJob],
+      ["weldingCurrentOrSpeed", s.weldingCurrentOrSpeed],
+      ["weldingVoltageOrStrength", s.weldingVoltageOrStrength],
+    ].forEach(([id, value]) => {
+      const control = $(id);
+      if (document.activeElement !== control) control.value = String(value ?? 0);
+      control.disabled = !commandEnabled || weldingInProgress;
+    });
+    $("startWelding").disabled = !commandEnabled
+      || weldingInProgress
+      || !s.weldingRobotReady
+      || s.weldingPowerFault;
+    $("stopWelding").disabled = !hasWelding || !weldingConnected;
+    $("weldingModeHint").textContent = !hasWelding
+      ? "等待识别麦格米特焊机。"
+      : !weldingConnected
+        ? "焊机尚未进入可通信状态。"
+        : s.weldingPowerFault
+          ? "焊机报告电源故障，开始焊接已禁止。"
+          : weldingInProgress
+            ? "焊接进行中，保持页面连接。"
+            : s.weldingCommandActive
+              ? "命令已准备，可以继续调整参数或开始焊接。"
+              : "选择参数后点击开始焊接。";
+  }
+
+  function updateNavigation(hasDrive, hasDigitalIo, hasWelding) {
+    const available = { drive: hasDrive, io: hasDigitalIo, welding: hasWelding };
     if (!available[activeView]) {
-      activeView = hasDrive ? "drive" : hasDigitalIo ? "io" : "drive";
+      activeView = hasDrive ? "drive" : hasDigitalIo ? "io" : hasWelding ? "welding" : "drive";
     }
+    const viewLabels = { drive: "驱动", io: "I/O", welding: "焊机" };
     viewButtons.forEach((button) => {
       const view = button.dataset.view;
       const isAvailable = Boolean(available[view]);
       const isActive = isAvailable && view === activeView;
       const connected = view === "drive"
         ? (snap.driveConnected ?? snap.connected)
-        : (snap.ioConnected ?? snap.connected);
+        : view === "io"
+          ? (snap.ioConnected ?? snap.connected)
+          : (snap.weldingConnected ?? snap.connected);
       const status = button.querySelector(".nav-copy small");
       button.disabled = !isAvailable;
       button.classList.toggle("is-active", isActive);
@@ -260,7 +375,7 @@
         ? "当前总线未识别此设备"
         : isActive
           ? "当前界面"
-          : `切换到${view === "drive" ? "驱动" : "I/O"}界面`;
+          : `切换到${viewLabels[view] || view}界面`;
       if (status) {
         status.textContent = !isAvailable
           ? "未接入"
@@ -280,20 +395,29 @@
     const hasDigitalIo = snap.hasDigitalIo ?? (
       snap.deviceType === "digital_io" || snap.deviceType === "mixed"
     );
-    updateNavigation(hasDrive, hasDigitalIo);
+    const hasWelding = snap.hasWelding ?? (
+      snap.deviceType === "welding" || snap.deviceType === "mixed"
+    );
+    updateNavigation(hasDrive, hasDigitalIo, hasWelding);
     const showDrive = hasDrive && activeView === "drive";
     const showDigitalIo = hasDigitalIo && activeView === "io";
+    const showWelding = hasWelding && activeView === "welding";
     drivePage.hidden = !showDrive;
     ioPage.hidden = !showDigitalIo;
+    weldingPage.hidden = !showWelding;
     $("pageTitle").textContent = showDrive
       ? "驱动控制"
       : showDigitalIo
         ? "远程 I/O"
+        : showWelding
+          ? "焊机控制"
         : "等待设备";
     $("pageSubtitle").textContent = showDrive
       ? "CiA 402 多模式运动测试"
       : showDigitalIo
         ? `${channelCount(snap.ioInputChannels)} 路数字输入监视与 ${channelCount(snap.ioOutputChannels)} 路数字输出控制`
+        : showWelding
+          ? "麦格米特原始 PDO 命令与反馈测试"
         : "连接 EtherCAT 设备后可选择操作界面";
     const mode = viewMode();
     const availableModes = Array.isArray(snap.availableModes)
@@ -311,6 +435,7 @@
       && !snap.enabled
       && !snap.velocityCommand
       && !hasMotion
+      && !snap.weldingCommandActive
       && snap.state !== "SWITCHING";
     const canSwitchMode = hasDrive
       && snap.connected
@@ -331,6 +456,14 @@
       && snap.enabled
       && !snap.cspMoving
       && snap.state !== "ERROR";
+    const weldingConnected = snap.weldingConnected ?? (hasWelding && snap.connected);
+    const canControlWelding = hasWelding
+      && weldingConnected
+      && snap.state !== "ERROR"
+      && snap.state !== "SWITCHING";
+    const canStartWelding = canControlWelding
+      && Boolean(snap.weldingRobotReady)
+      && !snap.weldingPowerFault;
 
     enableSwitch.disabled = !canEnable;
     adapterSelect.disabled = !canSelectAdapter || adapters.length === 0;
@@ -361,6 +494,21 @@
     $("movePp").disabled = !canMovePp;
     $("startHoming").disabled = !canHome;
     $("moveCsp").disabled = !canMoveCsp;
+    weldingModeButtons.forEach((button) => {
+      button.disabled = !canControlWelding;
+    });
+    [
+      "weldingRobotReady",
+      "weldingGasTest",
+      "weldingWireInch",
+      "weldingWireRetract",
+      "weldingTouchEnable",
+      "weldingJob",
+      "weldingCurrentOrSpeed",
+      "weldingVoltageOrStrength",
+    ].forEach((id) => { $(id).disabled = !canControlWelding; });
+    $("startWelding").disabled = !canStartWelding;
+    $("stopWelding").disabled = !hasWelding || !snap.weldingCommandActive;
     $("jogHint").textContent = !snap.enableRequested
       ? "请先打开驱动使能"
       : "按住方向按钮运行，松开停止";
@@ -388,18 +536,33 @@
       : !modeAvailable
         ? "当前驱动的 ESI/固件没有声明此模式，不能切换。"
         : "未使能时可切换运行模式。";
+    $("weldingModeHint").textContent = !hasWelding
+      ? "等待识别麦格米特焊机。"
+      : !weldingConnected
+        ? "焊机尚未进入可通信状态。"
+        : snap.weldingPowerFault
+          ? "焊机报告电源故障，开始焊接已禁止。"
+          : snap.weldingCommandActive
+            ? "焊机命令活动中，保持页面连接。"
+            : "参数只在开始焊接时发送。";
     renderIo(snap);
+    renderWelding(snap);
   }
 
   viewButtons.forEach((button) => {
     button.addEventListener("click", () => {
       if (button.disabled || !button.dataset.view) return;
+      if (activeView === "welding" && button.dataset.view !== "welding") {
+        stopWeldingHeartbeat();
+        api("stop_welding");
+      }
       activeView = button.dataset.view;
       updateControls();
     });
   });
 
-  function renderAdapters(items) {
+  function renderAdapters(items, received = true) {
+    adapterListReceived = received;
     adapters = Array.isArray(items)
       ? items.filter((item) => item && item.name)
       : [];
@@ -407,8 +570,13 @@
     const selected = adapterSelect.value || snap.interface;
     adapterSelect.replaceChildren();
     if (adapters.length === 0) {
-      adapterSelect.add(new Option("未发现 Npcap 网卡", ""));
-      $("adapterHint").textContent = "未发现可选物理网卡，请检查网卡驱动或点击刷新。";
+      adapterSelect.add(new Option(
+        received ? "未发现 Npcap 网卡" : "本地后端未连接",
+        "",
+      ));
+      $("adapterHint").textContent = received
+        ? "未发现可选物理网卡，请检查网卡驱动或点击刷新。"
+        : "正在连接本地后端，请稍候...";
     } else {
       adapterSelect.add(new Option(
         selectableAdapters.length
@@ -439,6 +607,7 @@
   }
 
   refreshAdapters.addEventListener("click", () => api("list_adapters"));
+  adapterSelect.addEventListener("change", updateControls);
   applyAdapter.addEventListener("click", () => {
     if (applyAdapter.disabled || !adapterSelect.value) return;
     $("adapterHint").textContent = "正在切换网卡...";
@@ -536,6 +705,92 @@
   }
   $("startHoming").addEventListener("click", startHoming);
 
+  function weldingNumber(id, minimum, maximum) {
+    const value = Number($(id).value);
+    return Number.isInteger(value) && value >= minimum && value <= maximum ? value : null;
+  }
+
+  let weldingHeartbeatTimer = null;
+  function stopWeldingHeartbeat() {
+    if (weldingHeartbeatTimer !== null) clearInterval(weldingHeartbeatTimer);
+    weldingHeartbeatTimer = null;
+  }
+  function startWeldingHeartbeat() {
+    if (weldingHeartbeatTimer !== null) return;
+    weldingHeartbeatTimer = setInterval(() => {
+      if (snap.weldingCommandActive && activeView === "welding") {
+        api("welding_keepalive");
+      } else {
+        stopWeldingHeartbeat();
+      }
+    }, 120);
+  }
+
+  function weldingCommandBody(startWelding = false) {
+    const job = weldingNumber("weldingJob", 0, 49);
+    const currentOrSpeed = weldingNumber("weldingCurrentOrSpeed", 0, 65535);
+    const voltageOrStrength = weldingNumber("weldingVoltageOrStrength", 0, 65535);
+    if (job === null || currentOrSpeed === null || voltageOrStrength === null) {
+      $("weldingModeHint").textContent = "JOB 必须为 0-49 的整数，电流/速度和电压/强度必须为 0-65535 的整数。";
+      return null;
+    }
+    return {
+      startWelding,
+      robotReady: $("weldingRobotReady").checked,
+      mode: requestedWeldingMode,
+      gasTest: $("weldingGasTest").checked,
+      wireInch: $("weldingWireInch").checked,
+      wireRetract: $("weldingWireRetract").checked,
+      touchEnable: $("weldingTouchEnable").checked,
+      job,
+      currentOrSpeed,
+      voltageOrStrength,
+    };
+  }
+
+  function sendWeldingCommand(startWelding = false) {
+    const body = weldingCommandBody(startWelding);
+    if (body === null) return false;
+    api("set_welding_command", body);
+    startWeldingHeartbeat();
+    return true;
+  }
+
+  weldingModeButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      if (button.disabled || !button.dataset.weldingMode) return;
+      requestedWeldingMode = button.dataset.weldingMode;
+      updateControls();
+      sendWeldingCommand(false);
+    });
+  });
+
+  [
+    "weldingRobotReady",
+    "weldingGasTest",
+    "weldingWireInch",
+    "weldingWireRetract",
+    "weldingTouchEnable",
+    "weldingJob",
+    "weldingCurrentOrSpeed",
+    "weldingVoltageOrStrength",
+  ].forEach((id) => {
+    $(id).addEventListener("change", () => {
+      if (!$(id).disabled) sendWeldingCommand(false);
+    });
+  });
+
+  $("startWelding").addEventListener("click", () => {
+    if ($("startWelding").disabled) return;
+    if (!sendWeldingCommand(false)) return;
+    api("start_welding");
+    startWeldingHeartbeat();
+  });
+  $("stopWelding").addEventListener("click", () => {
+    if ($("stopWelding").disabled) return;
+    stopWeldingHeartbeat();
+    api("stop_welding");
+  });
   function moveCsp() {
     if ($("moveCsp").disabled) return;
     const targetPosition = integerInput("cspTarget");
@@ -592,6 +847,7 @@
   function stopAllMotion() {
     stopJog();
     stopMotionHeartbeat();
+    stopWeldingHeartbeat();
     api("stop");
   }
   $("stopBtn").addEventListener("click", stopAllMotion);
@@ -617,12 +873,13 @@
     PP_MOVING: "PP 执行中",
     HOMING: "回零中",
     CSP_MOVING: "CSP 执行中",
+    WELDING: "焊接中",
     WAITING_INTERFACE: "等待选择网卡",
     ERROR: "故障",
   };
   function stateKind(s) {
     if (s === "ERROR") return "err";
-    if (s === "OPERATIONAL" || s === "ENABLED" || s === "JOGGING" || s === "PP_MOVING" || s === "HOMING" || s === "CSP_MOVING") return "ok";
+    if (s === "OPERATIONAL" || s === "ENABLED" || s === "JOGGING" || s === "PP_MOVING" || s === "HOMING" || s === "CSP_MOVING" || s === "WELDING") return "ok";
     return "warn";
   }
   function render(s) {
@@ -659,12 +916,18 @@
     }
     if (s.ppMoving || s.homingActive || s.cspMoving) startMotionHeartbeat();
     else stopMotionHeartbeat();
+    if (s.weldingCommandActive && activeView === "welding") startWeldingHeartbeat();
+    else stopWeldingHeartbeat();
     updateControls();
   }
 
   /* ---------- WebSocket stream ---------- */
   function connectStream() {
     socket = new WebSocket("ws://127.0.0.1:8765");
+    socket.onopen = () => {
+      $("adapterHint").textContent = "已连接本地后端，正在读取网卡...";
+      api("list_adapters");
+    };
     socket.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data);
@@ -685,9 +948,13 @@
       } catch (err) {}
     };
     socket.onerror = () => {
+      if (!adapterListReceived) {
+        $("adapterHint").textContent = "本地后端未连接，正在重试...";
+      }
     };
     socket.onclose = () => {
       stopMotionHeartbeat();
+      renderAdapters([], false);
       setTimeout(connectStream, 1000);
     };
   }
@@ -698,6 +965,6 @@
   document.addEventListener("visibilitychange", () => { if (document.hidden) stopAllMotion(); });
 
   updateControls();
-  renderAdapters([]);
+  renderAdapters([], false);
   connectStream();
 })();

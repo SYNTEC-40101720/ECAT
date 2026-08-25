@@ -104,6 +104,23 @@ class DriveProfile:
 
 
 @dataclass(frozen=True, slots=True)
+class WeldingProfile:
+    name: str
+    vendor: int
+    product: int
+    rx_pdo: int
+    tx_pdo: int
+    rx_bytes: int
+    tx_bytes: int
+    command_bytes: int = 8
+    status_bytes: int = 14
+
+    @property
+    def io_map_bytes(self) -> int:
+        return self.rx_bytes + self.tx_bytes
+
+
+@dataclass(frozen=True, slots=True)
 class RemoteIoProfile:
     name: str
     vendor: int
@@ -117,6 +134,7 @@ class RemoteIoProfile:
     expected_module_ids: tuple[int, ...] = ()
     module_init_commands: tuple[tuple[int, int, bytes], ...] = ()
     module_slot_stride: int = 0x10
+    allow_partial_wkc: bool = False
 
     @property
     def io_map_bytes(self) -> int:
@@ -214,6 +232,22 @@ PROFILES_BY_ID = {
     (profile.vendor, profile.product): profile for profile in DRIVE_PROFILES
 }
 
+WELDING_PROFILES = (
+    WeldingProfile(
+        "Megmeet 焊机 EtherNet/IP",
+        0xE000001B,
+        0x00000036,
+        0x1600,
+        0x1A00,
+        37,
+        37,
+    ),
+)
+
+WELDING_PROFILES_BY_ID = {
+    (profile.vendor, profile.product): profile for profile in WELDING_PROFILES
+}
+
 REMOTE_IO_PROFILES = (
     RemoteIoProfile(
         "HAUTO DIO 16DI/16DO",
@@ -225,6 +259,7 @@ REMOTE_IO_PROFILES = (
         2,
         16,
         16,
+        allow_partial_wkc=True,
     ),
     RemoteIoProfile(
         "DECOWELL EX-203S + EX-313S 32DI/32DO",
@@ -251,6 +286,10 @@ REMOTE_IO_PROFILES_BY_ID = {
 
 def get_drive_profile(vendor: int, product: int) -> DriveProfile | None:
     return PROFILES_BY_ID.get((vendor, product))
+
+
+def get_welding_profile(vendor: int, product: int) -> WeldingProfile | None:
+    return WELDING_PROFILES_BY_ID.get((vendor, product))
 
 
 def get_remote_io_profile(vendor: int, product: int) -> RemoteIoProfile | None:

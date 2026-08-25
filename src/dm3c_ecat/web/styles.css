@@ -432,6 +432,81 @@ body {
 .io-output-input:focus-visible + .io-output-track { outline: 2px solid var(--focus); outline-offset: 2px; }
 .io-safety { padding: var(--s3); border-left: 2px solid var(--warning); background: var(--warning-weak); }
 
+/* ---------- Welding machine ---------- */
+.welding-page[hidden] { display: none; }
+.welding-summary {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.45fr) repeat(3, minmax(120px, .75fr));
+  gap: var(--s4);
+  align-items: stretch;
+  padding: 24px;
+  background: var(--hero-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+}
+.welding-summary-copy { min-width: 0; display: flex; flex-direction: column; justify-content: center; }
+.welding-summary-copy h2 { margin: 8px 0 4px; font-size: 24px; letter-spacing: .01em; }
+.welding-summary-copy p { margin: 0; color: var(--text-muted); }
+.welding-readout {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  padding: var(--s4);
+  border-left: 2px solid var(--cyan);
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+}
+.welding-readout span, .welding-readout small { color: var(--text-muted); }
+.welding-readout span { font-size: 11px; font-weight: 700; }
+.welding-readout strong { overflow: hidden; text-overflow: ellipsis; font: 700 20px var(--mono); color: var(--cyan); }
+.welding-readout strong[data-state="on"] { color: var(--success); }
+.welding-readout-status { border-left-color: var(--primary); }
+.welding-readout-status strong { color: var(--primary); }
+.welding-readout-fault { border-left-color: var(--danger); }
+.welding-readout-fault strong { color: var(--danger); }
+.welding-layout { align-items: start; }
+.welding-card .card-body { min-width: 0; }
+.welding-mode-switch { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.welding-toggle-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s2);
+}
+.welding-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-height: 40px;
+  padding: 0 var(--s3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+}
+.welding-toggle:has(input:checked) { border-color: var(--primary); background: var(--primary-weak); }
+.welding-toggle input { accent-color: var(--primary); }
+.welding-toggle input:disabled { cursor: not-allowed; }
+.welding-command-actions { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s3); align-items: stretch; }
+.welding-command-actions .stop-btn { margin-top: 0; min-height: 58px; }
+.welding-feedback-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s2); }
+.welding-metric {
+  min-width: 0;
+  min-height: 76px;
+  padding: var(--s3);
+  border-left: 2px solid var(--cyan);
+  background: var(--surface-2);
+}
+.welding-metric span, .welding-metric strong { display: block; }
+.welding-metric span { color: var(--text-muted); font-size: 11px; }
+.welding-metric strong { margin-top: var(--s1); overflow: hidden; text-overflow: ellipsis; font: 700 16px var(--mono); color: var(--text); }
+.welding-metric:nth-child(2) { border-left-color: var(--primary); }
+.welding-metric:nth-child(3) { border-left-color: var(--danger); }
+.welding-metric:nth-child(4) { border-left-color: var(--success); }
+.welding-metric:nth-child(6) { border-left-color: var(--danger); }
+.welding-metric:nth-child(7), .welding-metric:nth-child(8), .welding-metric:nth-child(9) { border-left-color: var(--primary); }
+
 /* ---------- Fields ---------- */
 .field-label { font-size: 12px; color: var(--text-muted); font-weight: 600; }
 .mode-settings[hidden], #ppControls[hidden] { display: none; }
@@ -663,7 +738,10 @@ code {
   .grid-2, .metric-grid, .field-2 { grid-template-columns: 1fr; }
   .io-summary { grid-template-columns: 1fr 1fr; }
   .io-summary-copy { grid-column: 1 / -1; }
+  .welding-summary { grid-template-columns: 1fr 1fr; }
+  .welding-summary-copy { grid-column: 1 / -1; }
   .mode-catalog { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .welding-mode-switch { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .overview-hero, .overview-columns { display: grid; grid-template-columns: 1fr; }
   .overview-grid { grid-template-columns: 1fr; }
   .hero-state { border-left: 0; border-top: 1px solid var(--border); padding: 16px 0 0; }
@@ -688,8 +766,11 @@ code {
   .content { padding: 20px 16px 32px; }
   .io-summary { grid-template-columns: 1fr; padding: 18px; }
   .io-summary-copy { grid-column: auto; }
+  .welding-summary { grid-template-columns: 1fr; padding: 18px; }
+  .welding-summary-copy { grid-column: auto; }
   .io-channel-grid { grid-template-columns: 1fr; }
   .mode-catalog { grid-template-columns: 1fr 1fr; }
+  .welding-mode-switch, .welding-toggle-grid, .welding-feedback-grid, .welding-command-actions { grid-template-columns: 1fr; }
   .settings-dialog { width: calc(100vw - 24px); max-height: calc(100vh - 24px); }
   .settings-head, .settings-body { padding: 16px; }
   .settings-section-head { flex-direction: column; }

@@ -40,7 +40,8 @@
 窗口失焦 / 心跳超时（0.35s）→ 停止当前运动并保持使能；驱动故障 / WKC 异常 / 程序退出 → 停止并禁能。前端在 `blur`、`beforeunload`、`visibilitychange` 时也主动发送停止运动命令。HM/CSP 也有独立运动看门狗。
 
 ## 验证
-- `py -m pytest`：16 项通过；Python `py_compile` 和 `node --check src/dm3c_ecat/web/app.js` 通过。
+- `python -m pytest -q`：58 项通过；Python compileall 和
+  `node --check src/dm3c_ecat/web/app.js` 通过。
 - 浏览器检查：桌面模式目录三列、390px 移动端两列，均无横向溢出；旧后端缺少能力字段时只保守开放 PV/PP。
 - 用桩 `pysoem` 把服务跑起来实测：`/`、`/styles.css`、`/app.js`、`/api/status`、`/api/adapters`、`/api/stream`(SSE)、`POST /api/enable` 全部 200，`index.html` 正确引用脚本与样式；SSE 断开不再抛堆栈。
 - 真实硬件需在装好 Npcap 的目标机运行：`py start_ecat_test.py`。

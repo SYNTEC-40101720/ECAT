@@ -11,6 +11,7 @@ from .device_profiles import (
     DriveProfile,
     get_drive_profile,
     get_remote_io_profile,
+    get_welding_profile,
     initialize_remote_io_modules,
     resolve_remote_io_profile,
     resolve_default_interface,
@@ -107,6 +108,11 @@ def main() -> int:
             profile = get_remote_io_profile(slave.man, slave.id)
             if profile is not None:
                 io_entries.append((index, slave, profile))
+        welding_entries = [
+            (index, slave, profile)
+            for index, slave in enumerate(master.slaves, start=1)
+            if (profile := get_welding_profile(slave.man, slave.id)) is not None
+        ]
         modular_io_entries = [
             (index, slave, profile)
             for index, slave, profile in io_entries
@@ -143,11 +149,10 @@ def main() -> int:
             )
             configure_velocity_pdo(drive_slave, drive_profile)
 
-        io_map_size = (
-            master.config_overlap_map()
-            if args.configure_velocity_pdo
-            else master.config_map()
+        use_overlap_map = args.configure_velocity_pdo or bool(
+            welding_entries and (drive_entries or io_entries)
         )
+        io_map_size = master.config_overlap_map() if use_overlap_map else master.config_map()
 
         if args.configure_velocity_pdo:
             master.state = pysoem.SAFEOP_STATE
@@ -185,6 +190,7 @@ def main() -> int:
 
             drive_profile = get_drive_profile(vendor, product)
             io_profile = get_remote_io_profile(vendor, product)
+            welding_profile = get_welding_profile(vendor, product)
             if io_profile is not None:
                 resolved_profile = resolved_io_profiles.get(index, io_profile)
                 print(
@@ -201,6 +207,15 @@ def main() -> int:
                 rx_pdo = drive_profile.rx_pdo if args.configure_velocity_pdo else 0x1602
                 assigned_rx_bits[index] = print_mapping(slave, rx_pdo, "RxPDO")
                 print_mapping(slave, drive_profile.tx_pdo, "TxPDO")
+            elif welding_profile is not None:
+                print(
+                    f"  Profile: {welding_profile.name} RxPDO 0x{welding_profile.rx_pdo:04X} "
+                    f"/ TxPDO 0x{welding_profile.tx_pdo:04X} "
+                    f"Rx/Tx {welding_profile.rx_bytes}/{welding_profile.tx_bytes} bytes "
+                    f"(command/status {welding_profile.command_bytes}/"
+                    f"{welding_profile.status_bytes} bytes)"
+                )
+                assigned_rx_bits[index] = welding_profile.rx_bytes * 8
             else:
                 print("  WARNING: slave is not a supported device profile.")
 
@@ -215,6 +230,7 @@ def main() -> int:
             supported_profile = get_drive_profile(slave.man, slave.id)
             supported_profile = supported_profile or resolved_io_profiles.get(index)
             supported_profile = supported_profile or get_remote_io_profile(slave.man, slave.id)
+            supported_profile = supported_profile or get_welding_profile(slave.man, slave.id)
             if supported_profile is not None and (
                 len(slave.output) != supported_profile.rx_bytes
                 or len(slave.input) != supported_profile.tx_bytes
@@ -226,7 +242,7 @@ def main() -> int:
         if args.cycle_once:
             for slave in master.slaves:
                 slave.output = bytes(len(slave.output))
-            if args.configure_velocity_pdo:
+            if use_overlap_map:
                 master.send_overlap_processdata()
             else:
                 master.send_processdata()

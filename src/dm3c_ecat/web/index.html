@@ -32,6 +32,13 @@
             <small id="ioNavStatus">等待连接</small>
           </span>
         </button>
+        <button class="nav-item" type="button" data-view="welding" aria-current="false">
+          <span class="nav-ico" aria-hidden="true">WELD</span>
+          <span class="nav-copy">
+            <b>焊机</b>
+            <small id="weldingNavStatus">等待连接</small>
+          </span>
+        </button>
       </nav>
       <div class="side-note">
         <span class="side-note-label">本地会话</span>
@@ -273,6 +280,95 @@
               <div class="card-body">
                 <div class="io-channel-grid" id="ioOutputs" aria-label="数字输出"></div>
                 <p class="hint io-safety" id="ioOutputHint">输出会在页面断开、程序退出或点击停止后归零。</p>
+              </div>
+            </div>
+          </div>
+        </section>
+        <section class="page welding-page" id="weldingPage" hidden aria-labelledby="weldingPageTitle">
+          <div class="welding-summary">
+            <div class="welding-summary-copy">
+              <span class="section-kicker">WELDING MACHINE</span>
+              <h2 id="weldingPageTitle">麦格米特焊机</h2>
+              <p id="weldingMessage" aria-live="polite">等待焊机过程数据周期。</p>
+            </div>
+            <div class="welding-readout">
+              <span>通信</span>
+              <strong id="weldingCommunication">等待</strong>
+              <small id="weldingDeviceName">未识别设备</small>
+            </div>
+            <div class="welding-readout welding-readout-status">
+              <span>过程数据 WKC</span>
+              <strong id="weldingWkc">0 / 0</strong>
+              <small>10 ms 周期</small>
+            </div>
+            <div class="welding-readout welding-readout-fault">
+              <span>故障代码</span>
+              <strong id="weldingFaultSummary">0</strong>
+              <small id="weldingArcSummary">等待状态</small>
+            </div>
+          </div>
+          <div class="grid-2 welding-layout">
+            <div class="card welding-card">
+              <div class="card-head">
+                <h2>焊接命令</h2>
+                <span class="badge" id="weldingCommandBadge" data-off="1">禁止</span>
+              </div>
+              <div class="card-body">
+                <div class="mode-switch welding-mode-switch" id="weldingModeSwitch" role="group" aria-label="焊接工作模式">
+                  <button class="mode-option welding-mode-option is-active" type="button" data-welding-mode="dc_unified" aria-pressed="true"><b>DC</b><small>直流一元化</small></button>
+                  <button class="mode-option welding-mode-option" type="button" data-welding-mode="pulse_unified" aria-pressed="false"><b>PULSE</b><small>脉冲一元化</small></button>
+                  <button class="mode-option welding-mode-option" type="button" data-welding-mode="job" aria-pressed="false"><b>JOB</b><small>程序调用</small></button>
+                  <button class="mode-option welding-mode-option" type="button" data-welding-mode="remote" aria-pressed="false"><b>近控</b><small>近控模式</small></button>
+                  <button class="mode-option welding-mode-option" type="button" data-welding-mode="separate" aria-pressed="false"><b>分别</b><small>分别模式</small></button>
+                </div>
+                <p class="hint" id="weldingModeHint">选择工作模式后应用焊机命令。</p>
+                <div class="welding-toggle-grid">
+                  <label class="welding-toggle"><input type="checkbox" id="weldingRobotReady"><span>机器人准备</span></label>
+                  <label class="welding-toggle"><input type="checkbox" id="weldingGasTest"><span>气体检测</span></label>
+                  <label class="welding-toggle"><input type="checkbox" id="weldingWireInch"><span>点动送丝</span></label>
+                  <label class="welding-toggle"><input type="checkbox" id="weldingWireRetract"><span>反抽送丝</span></label>
+                  <label class="welding-toggle"><input type="checkbox" id="weldingTouchEnable"><span>寻位使能</span></label>
+                </div>
+                <div class="field-2">
+                  <div>
+                    <label class="field-label" for="weldingJob">JOB（0 - 49）</label>
+                    <input class="text-input" id="weldingJob" type="number" min="0" max="49" step="1" value="0" inputmode="numeric">
+                  </div>
+                  <div>
+                    <label class="field-label" for="weldingCurrentOrSpeed">焊接电流 / 送丝速度</label>
+                    <input class="text-input" id="weldingCurrentOrSpeed" type="number" min="0" max="65535" step="1" value="0" inputmode="numeric">
+                  </div>
+                </div>
+                <label class="field-label" for="weldingVoltageOrStrength">焊接电压 / 电压强度</label>
+                <input class="text-input" id="weldingVoltageOrStrength" type="number" min="0" max="65535" step="1" value="0" inputmode="numeric">
+                <div class="welding-command-actions">
+                  <button class="move-btn" id="startWelding" type="button" disabled>
+                    <span>开始焊接</span>
+                    <small>发送起弧命令</small>
+                  </button>
+                  <button class="stop-btn" id="stopWelding" type="button">停止焊接</button>
+                </div>
+                <p class="hint io-safety" id="weldingCommandHint">页面失焦、隐藏或断开连接时会停止焊机命令。</p>
+              </div>
+            </div>
+            <div class="card welding-card">
+              <div class="card-head">
+                <h2>焊机反馈</h2>
+                <span class="badge" id="weldingFeedbackBadge" data-off="1">等待</span>
+              </div>
+              <div class="card-body">
+                <div class="welding-feedback-grid">
+                  <div class="welding-metric"><span>起弧成功</span><strong id="weldingArcSuccess">否</strong></div>
+                  <div class="welding-metric"><span>焊接状态</span><strong id="weldingActive">未焊接</strong></div>
+                  <div class="welding-metric"><span>电源故障</span><strong id="weldingPowerFault">无</strong></div>
+                  <div class="welding-metric"><span>通信就绪</span><strong id="weldingCommunicationReady">否</strong></div>
+                  <div class="welding-metric"><span>寻位成功</span><strong id="weldingTouchSuccess">否</strong></div>
+                  <div class="welding-metric"><span>故障代码</span><strong id="weldingFaultCode">0</strong></div>
+                  <div class="welding-metric"><span>实际焊接电压</span><strong id="weldingActualVoltage">0</strong></div>
+                  <div class="welding-metric"><span>实际焊接电流</span><strong id="weldingActualCurrent">0</strong></div>
+                  <div class="welding-metric"><span>实时送丝速度</span><strong id="weldingWireSpeed">0</strong></div>
+                </div>
+                <p class="hint">状态来自焊机 TxPDO 0x1A00，实时量保持原始 uint16 值。</p>
               </div>
             </div>
           </div>
