@@ -155,6 +155,82 @@ def test_set_mode_is_rejected_during_homing_or_csp(runtime, motion_field):
         runtime.set_mode(hmi.MODE_PP)
 
 
+@pytest.mark.parametrize(
+    ("device_field", "profile", "active_field"),
+    [
+        ("io_profile", REMOTE_IO_PROFILES[1], "io_output_mask"),
+        ("welding_profile", WELDING_PROFILES[0], "welding_command_active"),
+        ("welding_profile", WELDING_PROFILES[0], "welding_active"),
+    ],
+)
+def test_mode_switch_rejects_active_mixed_bus_outputs(
+    runtime, device_field, profile, active_field
+):
+    runtime.profile = DRIVE_PROFILES[0]
+    setattr(runtime, device_field, profile)
+    setattr(runtime, active_field, 1 if active_field == "io_output_mask" else True)
+    runtime.motion_mode = hmi.MODE_PV
+    runtime.pending_mode = hmi.MODE_PP
+
+    with pytest.raises(RuntimeError, match="cannot perform mode switch"):
+        runtime.switch_mode(hmi.MODE_PP)
+
+
+def test_mode_switch_rejects_active_drive_io_and_welding(runtime):
+    runtime.profile = DRIVE_PROFILES[0]
+    runtime.io_profile = REMOTE_IO_PROFILES[0]
+    runtime.welding_profile = WELDING_PROFILES[0]
+    runtime.io_output_mask = 1
+    runtime.welding_active = True
+    runtime.pending_mode = hmi.MODE_PP
+
+    with pytest.raises(RuntimeError, match="cannot perform mode switch"):
+        runtime.switch_mode(hmi.MODE_PP)
+
+
+def test_mode_switch_sends_zero_frame_and_requires_strict_wkc(runtime):
+    runtime.profile = DRIVE_PROFILES[0]
+    runtime.io_profile = REMOTE_IO_PROFILES[0]
+    runtime.drive_slave = MagicMock()
+    runtime.io_slave = MagicMock()
+    runtime.drive_slave.output = bytearray(runtime.profile.rx_bytes)
+    runtime.drive_slave.input = bytearray(runtime.profile.tx_bytes)
+    runtime.io_slave.output = bytearray(runtime.io_profile.rx_bytes)
+    runtime.io_slave.input = bytearray(runtime.io_profile.tx_bytes)
+    runtime.expected_wkc = 3
+    runtime.cycle = MagicMock(return_value=3)
+    runtime.motion_mode = hmi.MODE_PV
+    runtime.master.config_init.return_value = 1
+    runtime.master.state_check.side_effect = [
+        hmi.pysoem.PREOP_STATE,
+        hmi.pysoem.SAFEOP_STATE,
+        hmi.pysoem.OP_STATE,
+    ]
+    runtime._identify_slaves = MagicMock()
+    runtime._read_mode_capabilities = MagicMock()
+    runtime.configure_process_data = MagicMock()
+
+    runtime.switch_mode(hmi.MODE_PP)
+
+    runtime.cycle.assert_called_once_with(0x0006, 0)
+    assert bytes(runtime.io_slave.output) == b"\x00\x00"
+
+
+def test_mode_switch_wkc_failure_latches_error_before_preop(runtime):
+    runtime.profile = DRIVE_PROFILES[0]
+    runtime.drive_slave = MagicMock()
+    runtime.expected_wkc = 3
+    runtime.cycle = MagicMock(return_value=2)
+    runtime.motion_mode = hmi.MODE_PV
+    runtime.pending_mode = hmi.MODE_PP
+
+    with pytest.raises(RuntimeError, match="safety interlock failed"):
+        runtime.switch_mode(hmi.MODE_PP)
+
+    assert runtime.state == "ERROR"
+    runtime.master.state_check.assert_not_called()
+
+
 def test_pp_ramp_times_are_converted_to_profile_values(runtime):
     runtime.motion_mode = hmi.MODE_PP
     runtime.enable_requested = True
@@ -235,6 +311,21 @@ def test_runtime_fails_closed_when_6502_is_unavailable(runtime):
         runtime._read_mode_capabilities()
 
 
+def test_drive_pdo_assignment_readback_rejects_mismatch(runtime):
+    drive = MagicMock()
+    drive.sdo_read.side_effect = lambda index, subindex: {
+        (0x1C12, 0): b"\x01",
+        (0x1C12, 1): b"\x01\x16",
+        (0x1C13, 0): b"\x01",
+        (0x1C13, 1): b"\x00\x1A",
+    }[(index, subindex)]
+    runtime.drive_slave = drive
+    runtime.profile = DRIVE_PROFILES[0]
+
+    with pytest.raises(RuntimeError, match="0x1C12:01 mismatch"):
+        runtime._validate_drive_pdo_assignments(0x1602)
+
+
 def test_homing_and_csp_commands_queue_motion(runtime):
     runtime.motion_mode = hmi.MODE_HM
     runtime.enable_requested = True
@@ -253,6 +344,87 @@ def test_homing_and_csp_commands_queue_motion(runtime):
     assert runtime.csp_move_pending is True
     assert runtime.csp_start_position == 200
     assert runtime.csp_target_position == 1200
+
+
+def test_csp_trajectory_accepts_limits_and_reverse_direction(runtime):
+    runtime.profile = DRIVE_PROFILES[1]
+    runtime.motion_mode = hmi.MODE_CSP
+    runtime.enable_requested = True
+    runtime.enabled = True
+    runtime.actual_position = 10_000
+
+    runtime.move_csp(0, 1.0)
+
+    assert runtime.csp_start_position == 10_000
+    assert runtime.csp_target_position == 0
+
+
+@pytest.mark.parametrize(
+    ("target", "duration", "message"),
+    [
+        (hmi.CSP_MAX_VELOCITY + 1, 1.0, "velocity limit"),
+        (50, 0.01, "acceleration limit"),
+    ],
+)
+def test_csp_trajectory_rejects_derived_limits(runtime, target, duration, message):
+    runtime.profile = DRIVE_PROFILES[1]
+    runtime.motion_mode = hmi.MODE_CSP
+    runtime.enable_requested = True
+    runtime.enabled = True
+
+    with pytest.raises(ValueError, match=message):
+        runtime.move_csp(target, duration)
+
+    assert runtime.csp_move_pending is False
+
+
+@pytest.mark.parametrize("duration", [0, -1, float("nan"), float("inf")])
+def test_csp_rejects_zero_negative_and_non_finite_duration(runtime, duration):
+    runtime.profile = DRIVE_PROFILES[1]
+    runtime.motion_mode = hmi.MODE_CSP
+    runtime.enable_requested = True
+    runtime.enabled = True
+
+    with pytest.raises(ValueError):
+        runtime.move_csp(100, duration)
+
+
+def test_csp_following_error_protection_latches_error_and_clears_command(runtime):
+    runtime.profile = DRIVE_PROFILES[1]
+    runtime.drive_slave = MagicMock()
+    runtime.expected_wkc = 3
+    runtime.running = True
+    runtime.enable_requested = True
+    runtime.enabled = True
+    runtime.motion_mode = hmi.MODE_CSP
+    runtime.configure = MagicMock()
+    runtime.cycle = MagicMock(return_value=3)
+    runtime.feedback = MagicMock(
+        side_effect=lambda: setattr(runtime, "actual_position", 2_000)
+    )
+    runtime.move_csp(0, 1.0)
+    runtime.csp_protection_active = True
+    runtime.csp_move_active = True
+    runtime.csp_command_position = 0
+
+    runtime.loop()
+
+    assert runtime.state == "ERROR"
+    assert runtime.enable_requested is False
+    assert runtime.csp_move_active is False
+    assert "following error exceeded" in runtime.message
+
+
+def test_csp_cycle_protection_uses_virtual_time(runtime):
+    runtime.csp_protection_active = True
+    runtime.csp_move_active = True
+    runtime.csp_command_position = 0
+    runtime.actual_position = 0
+    runtime.csp_last_cycle_at = 10.0
+
+    assert runtime._check_csp_protection(10.0 + hmi.CSP_MAX_CYCLE_TIME) is None
+    runtime.csp_last_cycle_at = 10.0
+    assert runtime._check_csp_protection(10.0 + hmi.CSP_MAX_CYCLE_TIME + 0.001)
 
 
 def test_snapshot_exposes_profile_modes_and_motion_state(runtime):
@@ -344,6 +516,48 @@ def test_decowell_io_initializes_modules_before_mapping(runtime):
     runtime.master.config_map.assert_called_once_with()
 
 
+def test_solidot_ec4_mapping_accepts_only_known_fixed_pdo_error(runtime):
+    io_profile = get_remote_io_profile(0x00884443, 0x00000004, 0x00000001)
+    io_slave = MagicMock()
+    io_slave.output = bytearray(2)
+    io_slave.input = bytearray(2)
+    runtime.io_profile = io_profile
+    runtime.io_slave = io_slave
+    runtime.master.slaves = [io_slave]
+    runtime.master.config_map.side_effect = hmi.pysoem.ConfigMapError(
+        [
+            hmi.pysoem.SdoError(
+                1,
+                0x1C00,
+                0,
+                0x06020000,
+                "The object does not exist in the object directory",
+            )
+        ]
+    )
+
+    runtime.configure_io_process_data()
+
+    assert runtime.expected_wkc == 3
+    runtime.master.config_map.assert_called_once_with()
+
+
+def test_solidot_ec4_mapping_does_not_hide_other_errors(runtime):
+    io_profile = get_remote_io_profile(0x00884443, 0x00000004, 0x00000001)
+    io_slave = MagicMock()
+    io_slave.output = bytearray(2)
+    io_slave.input = bytearray(2)
+    runtime.io_profile = io_profile
+    runtime.io_slave = io_slave
+    runtime.master.slaves = [io_slave]
+    runtime.master.config_map.side_effect = hmi.pysoem.ConfigMapError(
+        [hmi.pysoem.SdoError(1, 0x1C12, 0, 0x06010000, "mapping failed")]
+    )
+
+    with pytest.raises(hmi.pysoem.ConfigMapError):
+        runtime.configure_io_process_data()
+
+
 def test_remote_io_requests_safeop_process_cycle_before_op(runtime):
     runtime.io_profile = REMOTE_IO_PROFILES[0]
     runtime.io_slave = MagicMock()
@@ -411,7 +625,13 @@ def test_runtime_keeps_drive_and_remote_io_on_the_same_bus(runtime):
     drive_slave.id = DRIVE_PROFILES[1].product
     drive_slave.output = bytearray(DRIVE_PROFILES[1].rx_bytes)
     drive_slave.input = bytearray(DRIVE_PROFILES[1].tx_bytes)
-    drive_slave.sdo_read.return_value = b"\xA5\x00"
+    drive_slave.sdo_read.side_effect = lambda index, subindex: {
+        (0x6502, 0): b"\xA5\x00",
+        (0x1C12, 0): b"\x01",
+        (0x1C12, 1): b"\x02\x16",
+        (0x1C13, 0): b"\x01",
+        (0x1C13, 1): b"\x00\x1A",
+    }.get((index, subindex), b"\x00")
     io_slave = MagicMock()
     io_slave.man = REMOTE_IO_PROFILES[0].vendor
     io_slave.id = REMOTE_IO_PROFILES[0].product

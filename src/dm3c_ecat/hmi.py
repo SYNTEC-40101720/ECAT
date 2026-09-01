@@ -1,15 +1,10 @@
 from __future__ import annotations
 
-import argparse
-import json
 import logging
 import struct
 import threading
 import time
 from collections import deque
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
-from urllib.parse import urlparse
 
 import pysoem
 
@@ -19,6 +14,7 @@ from .device_profiles import (
     get_remote_io_profile,
     get_welding_profile,
     initialize_remote_io_modules,
+    is_tolerated_mapping_error,
     resolve_default_interface,
 )
 from .logging_setup import DEFAULT_LOG_FILE, configure_logging
@@ -49,6 +45,10 @@ DEFAULT_RAMP_TIME = 0.5
 MIN_RAMP_TIME = 0.01
 MAX_RAMP_TIME = 60.0
 MAX_ACCELERATION = 10_000_000
+CSP_MAX_VELOCITY = 10_000
+CSP_MAX_ACCELERATION = 100_000
+CSP_MAX_FOLLOWING_ERROR = 1_000
+CSP_MAX_CYCLE_TIME = 0.020
 PP_NEW_SETPOINT = 0x0010
 PP_RELATIVE = 0x0040
 PP_HALT = 0x0100
@@ -68,8 +68,7 @@ MIN_POSITION = -(1 << 31)
 MAX_POSITION = (1 << 31) - 1
 VELOCITY_MODES = {MODE_VM, MODE_PV, MODE_CSV}
 
-# Web HMI asset root and a ring buffer that the SSE stream replays to clients.
-WEB_ROOT = Path(__file__).parent / "web"
+# A ring buffer that the WebSocket gateway replays to clients.
 LOG_BUFFER: deque[str] = deque(maxlen=400)
 
 
@@ -234,6 +233,10 @@ class Runtime:
         self.csp_move_pending = False
         self.csp_move_active = False
         self.csp_heartbeat = 0.0
+        self.csp_command_position: int | None = None
+        self.csp_last_cycle_at: float | None = None
+        self.csp_protection_active = False
+        self.csp_following_error = 0
         self.actual_position = 0
         self.thread = threading.Thread(target=self.loop, daemon=True)
 
@@ -285,6 +288,7 @@ class Runtime:
                 or self.csp_move_pending
                 or self.csp_move_active
                 or self.welding_command_active
+                or self.welding_active
                 or self.io_output_mask
             ):
                 raise RuntimeError(
@@ -295,6 +299,7 @@ class Runtime:
             )
         if same_active_interface:
             return
+        self._prepare_bus_switch("interface change")
         if self.thread.is_alive():
             self.close()
         if self.thread.is_alive():
@@ -375,6 +380,23 @@ class Runtime:
             raise ValueError(f"{label} must be {MIN_RAMP_TIME}-{MAX_RAMP_TIME}s")
 
     @staticmethod
+    def _validate_csp_trajectory(
+        start_position: int, target_position: int, duration: float
+    ) -> tuple[int, int]:
+        displacement = abs(target_position - start_position)
+        derived_velocity = round(displacement / duration)
+        derived_acceleration = round(derived_velocity / duration)
+        if derived_velocity > CSP_MAX_VELOCITY:
+            raise ValueError(
+                f"CSP trajectory velocity limit is {CSP_MAX_VELOCITY}"
+            )
+        if derived_acceleration > CSP_MAX_ACCELERATION:
+            raise ValueError(
+                f"CSP trajectory acceleration limit is {CSP_MAX_ACCELERATION}"
+            )
+        return derived_velocity, derived_acceleration
+
+    @staticmethod
     def _ramp_value(magnitude: int, duration: float) -> int:
         return min(MAX_ACCELERATION, max(1, round(max(1, abs(magnitude)) / duration)))
 
@@ -451,12 +473,65 @@ class Runtime:
                 or self.csp_move_pending
                 or self.csp_move_active
                 or self.welding_command_active
+                or self.welding_active
+                or self.io_output_mask
             ):
                 raise RuntimeError("disable the drive before changing mode")
             self.pending_mode = mode
             self.state = "SWITCHING"
             self.message = f"Switching to {mode.upper()} mode..."
             LOGGER.info("Motion mode change requested: %s", mode)
+
+    def _prepare_bus_switch(self, operation: str) -> None:
+        """Verify and transmit a strict all-zero frame before bus reconfiguration."""
+        with self.lock:
+            if self.enable_requested or self.enabled:
+                blocked = "drive enabled"
+            elif (
+                self.command
+                or self.pp_move_pending
+                or self.pp_move_active
+                or self.homing_pending
+                or self.homing_active
+                or self.csp_move_pending
+                or self.csp_move_active
+            ):
+                blocked = "motion command or feedback active"
+            elif self.welding_command_active or self.welding_active:
+                blocked = "welding command or arc feedback active"
+            elif self.io_output_mask:
+                blocked = "digital outputs are non-zero"
+            else:
+                blocked = None
+            if blocked:
+                raise RuntimeError(f"cannot perform {operation}: {blocked}")
+
+            if not any(
+                device is not None
+                for device in (self.profile, self.io_profile, self.welding_profile)
+            ):
+                return
+            self.io_output_mask = 0
+            self._clear_welding_command_locked()
+
+        try:
+            if self.profile is not None and self._drive_device() is not None:
+                self.wkc = self.cycle(0x0006, 0)
+            elif self.welding_profile is not None and self._welding_device() is not None:
+                self.wkc = self.welding_cycle()
+            elif self.io_profile is not None and self._io_device() is not None:
+                self.wkc = self.io_cycle()
+            else:
+                return
+            if self.wkc != self.expected_wkc:
+                raise RuntimeError(
+                    f"switch safety-frame WKC mismatch: {self.wkc}/{self.expected_wkc}"
+                )
+        except Exception as exc:
+            message = f"{operation} safety interlock failed: {exc}"
+            self._latch_runtime_error(message)
+            LOGGER.error(message)
+            raise RuntimeError(message) from exc
 
     def move_pp(
         self,
@@ -590,19 +665,30 @@ class Runtime:
                 or self.homing_active
             ):
                 raise RuntimeError("a motion command is already in progress")
-            self.csp_start_position = self.actual_position
+            start_position = self.actual_position
+            derived_velocity, derived_acceleration = self._validate_csp_trajectory(
+                start_position, target_position, duration
+            )
+            self.csp_start_position = start_position
             self.csp_target_position = target_position
             self.csp_duration = duration
             self.csp_started_at = 0.0
             self.csp_move_pending = True
             self.csp_move_active = False
+            self.csp_command_position = start_position
+            self.csp_last_cycle_at = None
+            self.csp_protection_active = False
+            self.csp_following_error = 0
             self.csp_heartbeat = time.monotonic()
             self.message = "CSP move queued"
             LOGGER.info(
-                "CSP move requested: target=%s duration=%.3fs start=%s",
+                "CSP move requested: target=%s duration=%.3fs start=%s "
+                "derived_velocity=%s derived_acceleration=%s",
                 target_position,
                 duration,
-                self.csp_start_position,
+                start_position,
+                derived_velocity,
+                derived_acceleration,
             )
 
     def csp_keepalive(self) -> None:
@@ -1069,15 +1155,57 @@ class Runtime:
             ",".join(f"0x{module_id:08X}" for module_id in self.io_profile.expected_module_ids),
         )
 
+    def _map_process_data(self, *, overlap: bool) -> int:
+        mapper = self.master.config_overlap_map if overlap else self.master.config_map
+        try:
+            return mapper()
+        except pysoem.ConfigMapError as exc:
+            io_slave = self._io_device()
+            io_profile = self.io_profile
+            if io_slave is None or io_profile is None:
+                raise
+            slave_position = next(
+                (
+                    index
+                    for index, candidate in enumerate(self.master.slaves, start=1)
+                    if candidate is io_slave
+                ),
+                None,
+            )
+            errors = getattr(exc, "error_list", ())
+            if (
+                slave_position is None
+                or not errors
+                or not all(
+                    is_tolerated_mapping_error(
+                        error,
+                        io_profile,
+                        slave_position,
+                    )
+                    for error in errors
+                )
+            ):
+                raise
+            mapped_size = sum(
+                len(candidate.output) + len(candidate.input)
+                for candidate in self.master.slaves
+            )
+            LOGGER.warning(
+                "Ignoring known fixed-PDO mapping SDO error for %s at slave %s; "
+                "validated mapped process image size=%s bytes",
+                io_profile.name,
+                slave_position,
+                mapped_size,
+            )
+            return mapped_size
+
     def configure_io_process_data(self) -> None:
         io_slave = self._io_device()
         if self.io_profile is None or io_slave is None:
             raise RuntimeError("digital I/O profile is not available")
         self._prepare_io_modules()
-        io_map_size = (
-            self.master.config_overlap_map()
-            if self.profile is not None or self.welding_profile is not None
-            else self.master.config_map()
+        io_map_size = self._map_process_data(
+            overlap=self.profile is not None or self.welding_profile is not None
         )
         self._validate_io_process_data()
         self._validate_welding_process_data()
@@ -1104,10 +1232,8 @@ class Runtime:
         welding_slave = self._welding_device()
         if self.welding_profile is None or welding_slave is None:
             raise RuntimeError("welding profile is not available")
-        io_map_size = (
-            self.master.config_overlap_map()
-            if self.profile is not None or self.io_profile is not None
-            else self.master.config_map()
+        io_map_size = self._map_process_data(
+            overlap=self.profile is not None or self.io_profile is not None
         )
         self._validate_welding_process_data()
         if self.io_profile is not None:
@@ -1167,6 +1293,25 @@ class Runtime:
                 f"got {actual_sizes[0]}/{actual_sizes[1]}"
             )
 
+    @staticmethod
+    def _read_pdo_assignment(slave: object, index: int, expected: int) -> None:
+        count = int.from_bytes(slave.sdo_read(index, 0), "little")
+        if count < 1:
+            raise RuntimeError(f"PDO assignment 0x{index:04X}:00 is empty")
+        assigned = int.from_bytes(slave.sdo_read(index, 1), "little")
+        if assigned != expected:
+            raise RuntimeError(
+                f"PDO assignment 0x{index:04X}:01 mismatch: "
+                f"expected 0x{expected:04X}, got 0x{assigned:04X}"
+            )
+
+    def _validate_drive_pdo_assignments(self, rx_pdo: int) -> None:
+        drive_slave = self._drive_device()
+        if drive_slave is None:
+            raise RuntimeError("drive process data is not configured")
+        self._read_pdo_assignment(drive_slave, 0x1C12, rx_pdo)
+        self._read_pdo_assignment(drive_slave, 0x1C13, self.profile.tx_pdo)
+
     def _process_wkc_is_valid(self, *, pure_io: bool = False) -> bool:
         if (
             pure_io
@@ -1197,6 +1342,10 @@ class Runtime:
             self.csp_move_pending = False
             self.csp_move_active = False
             self.csp_heartbeat = 0
+            self.csp_command_position = None
+            self.csp_last_cycle_at = None
+            self.csp_protection_active = False
+            self.csp_following_error = 0
             self.io_output_mask = 0
             self._clear_welding_command_locked()
             self.state = "ERROR"
@@ -1370,8 +1519,13 @@ class Runtime:
                 ),
                 "velocityCommand": self.command,
                 "velocityLimit": MAX_VELOCITY,
+                "cspVelocityLimit": CSP_MAX_VELOCITY,
+                "cspAccelerationLimit": CSP_MAX_ACCELERATION,
+                "cspFollowingErrorLimit": CSP_MAX_FOLLOWING_ERROR,
+                "cspCycleTimeLimit": CSP_MAX_CYCLE_TIME,
                 "targetPosition": target_position,
                 "actualPosition": self.actual_position,
+                "cspFollowingError": self.csp_following_error,
                 "ppMoving": self.pp_move_pending or self.pp_move_active,
                 "homingActive": self.homing_pending or self.homing_active,
                 "homingAttained": bool(self.statusword & HOMING_ATTAINED),
@@ -1427,6 +1581,7 @@ class Runtime:
             if self.csp_move_pending:
                 self.csp_move_pending = False
                 self.csp_move_active = True
+                self.csp_protection_active = True
                 self.csp_started_at = now
                 self.message = "CSP move running"
             if not self.csp_move_active:
@@ -1441,6 +1596,30 @@ class Runtime:
                 self.csp_move_active = False
                 self.message = "CSP target reached"
             return target
+
+    def _check_csp_protection(self, now: float) -> str | None:
+        with self.lock:
+            if not self.csp_protection_active or self.csp_command_position is None:
+                return None
+            if self.csp_last_cycle_at is not None:
+                cycle_time = now - self.csp_last_cycle_at
+                if cycle_time > CSP_MAX_CYCLE_TIME:
+                    return (
+                        f"CSP cycle time exceeded: {cycle_time:.4f}s/"
+                        f"{CSP_MAX_CYCLE_TIME:.4f}s"
+                    )
+            self.csp_last_cycle_at = now
+            self.csp_following_error = abs(
+                self.actual_position - self.csp_command_position
+            )
+            if self.csp_following_error > CSP_MAX_FOLLOWING_ERROR:
+                return (
+                    f"CSP following error exceeded: {self.csp_following_error}/"
+                    f"{CSP_MAX_FOLLOWING_ERROR}"
+                )
+            if not self.csp_move_active:
+                self.csp_protection_active = False
+            return None
 
     def cycle(self, controlword: int, velocity: int = 0) -> int:
         with self.process_data_lock:
@@ -1499,6 +1678,8 @@ class Runtime:
             )
         elif packet_kind == "csp":
             target_position = self._next_csp_target()
+            with self.lock:
+                self.csp_command_position = target_position
             mode_in_pdo = mode_pdo.mode_in_pdo if mode_pdo else True
             target_velocity_in_pdo = mode_pdo.target_velocity_in_pdo if mode_pdo else False
             drive_slave.output = csp_packet(
@@ -1621,8 +1802,9 @@ class Runtime:
         drive_slave.sdo_write(
             0x6060, 0, mode_value.to_bytes(1, "little", signed=True)
         )
+        self._validate_drive_pdo_assignments(rx_pdo)
         self.motion_mode = mode
-        io_map_size = self.master.config_overlap_map()
+        io_map_size = self._map_process_data(overlap=True)
         actual_sizes = (len(drive_slave.output), len(drive_slave.input))
         expected_sizes = (rx_bytes, self.profile.tx_bytes)
         if actual_sizes != expected_sizes:
@@ -1697,8 +1879,10 @@ class Runtime:
         self.welding_profile = None
         unsupported: list[str] = []
         for candidate in self.master.slaves:
-            drive_profile = get_drive_profile(candidate.man, candidate.id)
-            io_profile = get_remote_io_profile(candidate.man, candidate.id)
+            revision = getattr(candidate, "rev", None)
+            revision = revision if isinstance(revision, int) else None
+            drive_profile = get_drive_profile(candidate.man, candidate.id, revision)
+            io_profile = get_remote_io_profile(candidate.man, candidate.id, revision)
             welding_profile = get_welding_profile(candidate.man, candidate.id)
             identity = f"0x{candidate.man:08X}/0x{candidate.id:08X}"
             if drive_profile is not None:
@@ -1764,6 +1948,7 @@ class Runtime:
 
     def switch_mode(self, mode: str) -> None:
         LOGGER.info("Switching EtherCAT process data to %s mode", mode.upper())
+        self._prepare_bus_switch("mode switch")
         self.master.state = pysoem.PREOP_STATE
         self.master.write_state()
         if self.master.state_check(pysoem.PREOP_STATE, 500_000) != pysoem.PREOP_STATE:
@@ -1952,6 +2137,13 @@ class Runtime:
                     self.welding_feedback()
                 if self.io_profile is not None:
                     self.read_io_inputs()
+                if motion_mode == MODE_CSP:
+                    csp_error = self._check_csp_protection(now)
+                    if csp_error is not None:
+                        self._latch_runtime_error(csp_error)
+                        LOGGER.error(csp_error)
+                        self._transmit_safe_outputs(disable_drive=True)
+                        return
                 if self.wkc != self.expected_wkc:
                     message = (
                         f"Process-data WKC mismatch: {self.wkc}/"
@@ -2052,211 +2244,3 @@ class Runtime:
                     self.state = "ERROR"
                     self.message = f"{self.message}; {detail}" if self.message else detail
             LOGGER.info("EtherCAT interface closed")
-
-
-class Handler(BaseHTTPRequestHandler):
-    runtime: Runtime
-    web_root: Path = WEB_ROOT
-    protocol_version = "HTTP/1.1"
-
-    def _send_json(self, payload: object, status: int = 200) -> None:
-        body = json.dumps(payload, ensure_ascii=False).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def _serve_file(self, rel: str, content_type: str) -> None:
-        path = self.web_root / rel
-        try:
-            data = path.read_bytes()
-        except OSError:
-            self._send_json({"error": f"asset {rel} missing"}, 404)
-            return
-        self.send_response(200)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-cache")
-        self.end_headers()
-        self.wfile.write(data)
-
-    def _adapters(self) -> dict:
-        try:
-            return {
-                "adapters": [
-                    {"name": name, "desc": description, "selectable": selectable}
-                    for name, description, selectable in enumerate_adapters()
-                ]
-            }
-        except Exception as exc:  # pragma: no cover - needs real hardware
-            return {"adapters": [], "error": str(exc)}
-
-    def do_GET(self) -> None:
-        route = urlparse(self.path).path
-        if route == "/":
-            self._serve_file("index.html", "text/html; charset=utf-8")
-        elif route == "/styles.css":
-            self._serve_file("styles.css", "text/css; charset=utf-8")
-        elif route == "/app.js":
-            self._serve_file("app.js", "text/javascript; charset=utf-8")
-        elif route in ("/api/status", "/api/snapshot"):
-            self._send_json(self.runtime.snapshot())
-        elif route == "/api/adapters":
-            self._send_json(self._adapters())
-        elif route == "/api/stream":
-            self._stream()
-        else:
-            self._send_json({"error": "not found"}, 404)
-
-    def _stream(self) -> None:
-        """Server-Sent Events: push the live snapshot plus new log lines."""
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
-        self.end_headers()
-        self.wfile.write(b": connected\n\n")
-        last = len(LOG_BUFFER)
-        try:
-            while True:
-                snap = self.runtime.snapshot()
-                self.wfile.write(
-                    f"event: state\ndata: {json.dumps(snap, ensure_ascii=False)}\n\n".encode()
-                )
-                if len(LOG_BUFFER) > last:
-                    for line in list(LOG_BUFFER)[last:]:
-                        self.wfile.write(
-                            f"event: log\ndata: {json.dumps(line, ensure_ascii=False)}\n\n".encode()
-                        )
-                    last = len(LOG_BUFFER)
-                self.wfile.flush()
-                time.sleep(0.2)
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-            return
-
-    def do_POST(self) -> None:
-        try:
-            size = int(self.headers.get("Content-Length", "0"))
-            data = json.loads(self.rfile.read(size) or b"{}")
-            route = urlparse(self.path).path
-            if route == "/api/jog":
-                LOGGER.info("Browser API jog: velocity=%s", data.get("velocity"))
-                self.runtime.jog(int(data["velocity"]))
-                self._send_json({"accepted": True})
-            elif route == "/api/set_mode":
-                LOGGER.info("Browser API set_mode: %s", data.get("mode"))
-                self.runtime.set_mode(str(data["mode"]))
-                self._send_json({"accepted": True})
-            elif route == "/api/move_pp":
-                LOGGER.info("Browser API move_pp: %s", data)
-                self.runtime.move_pp(
-                    int(data["targetPosition"]),
-                    int(data["velocity"]),
-                    int(data["acceleration"]),
-                    int(data["deceleration"]),
-                    bool(data.get("relative", False)),
-                )
-                self._send_json({"accepted": True})
-            elif route == "/api/start_homing":
-                LOGGER.info("Browser API start_homing: %s", data)
-                self.runtime.start_homing(
-                    int(data["method"]),
-                    int(data["fastVelocity"]),
-                    int(data["slowVelocity"]),
-                    float(data["accelerationTime"]),
-                    int(data.get("offset", 0)),
-                )
-                self._send_json({"accepted": True})
-            elif route == "/api/homing_keepalive":
-                self.runtime.homing_keepalive()
-                self._send_json({"accepted": True})
-            elif route == "/api/move_csp":
-                LOGGER.info("Browser API move_csp: %s", data)
-                self.runtime.move_csp(
-                    int(data["targetPosition"]),
-                    float(data["duration"]),
-                )
-                self._send_json({"accepted": True})
-            elif route == "/api/csp_keepalive":
-                self.runtime.csp_keepalive()
-                self._send_json({"accepted": True})
-            elif route == "/api/pp_keepalive":
-                self.runtime.pp_keepalive()
-                self._send_json({"accepted": True})
-            elif route == "/api/stop":
-                LOGGER.info("Browser API stop")
-                self.runtime.stop()
-                self._send_json({"accepted": True})
-            elif route == "/api/enable":
-                LOGGER.info("Browser API enable")
-                self.runtime.enable()
-                self._send_json({"accepted": True})
-            elif route == "/api/disable":
-                LOGGER.info("Browser API disable")
-                self.runtime.disable()
-                self._send_json({"accepted": True})
-            elif route == "/api/select_interface":
-                selected = str(data["interface"])
-                selectable = {
-                    name: is_selectable
-                    for name, _description, is_selectable in enumerate_adapters()
-                }
-                if not selectable.get(selected, False):
-                    raise ValueError("select a listed physical EtherCAT adapter")
-                LOGGER.info("Browser API select interface: %s", selected)
-                self.runtime.select_interface(selected)
-                self._send_json({"accepted": True})
-            elif route == "/api/set_ramp":
-                LOGGER.info("Browser API set_ramp: %s", data)
-                self.runtime.set_ramp_times(
-                    float(data["acceleration"]), float(data["deceleration"])
-                )
-                self._send_json({"accepted": True})
-            else:
-                self._send_json({"error": "not found"}, 404)
-        except (KeyError, TypeError, ValueError, RuntimeError) as exc:
-            self._send_json({"accepted": False, "error": str(exc)}, 400)
-        except Exception as exc:  # pragma: no cover - defensive HTTP layer
-            self._send_json({"accepted": False, "error": f"{type(exc).__name__}: {exc}"}, 500)
-
-    def log_message(self, *_args: object) -> None:
-        pass
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Local ECAT Test HMI")
-    parser.add_argument("--interface")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=5090)
-    parser.add_argument("--log-file", default=str(DEFAULT_LOG_FILE))
-    args = parser.parse_args()
-    configure_logging(args.log_file)
-    LOGGER.info("Starting browser HMI")
-    interface = args.interface or resolve_default_interface()
-    runtime = Runtime(interface)
-    Handler.runtime = runtime
-    Handler.web_root = WEB_ROOT
-
-    capture = _LogCapture()
-    capture.setFormatter(
-        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
-    )
-    logging.getLogger("ecat_test").addHandler(capture)
-
-    runtime.start()
-    server = ThreadingHTTPServer((args.host, args.port), Handler)
-    print(f"ECAT Test HMI: http://{args.host}:{args.port}")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        return 130
-    finally:
-        runtime.stop()
-        server.server_close()
-        runtime.close()
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

@@ -6,6 +6,7 @@
   let socket = null;
   let requestedMode = "pv";
   let pendingCommand = "";
+  let hasControl = false;
   const modeLabels = {
     pp: "PP 轮廓位置",
     vm: "VM 速度模式",
@@ -338,7 +339,7 @@
       || weldingInProgress
       || !s.weldingRobotReady
       || s.weldingPowerFault;
-    $("stopWelding").disabled = !hasWelding || !weldingConnected;
+    $("stopWelding").disabled = !hasControl || !hasWelding || !weldingConnected;
     $("weldingModeHint").textContent = !hasWelding
       ? "等待识别麦格米特焊机。"
       : !weldingConnected
@@ -428,36 +429,43 @@
       snap.velocityCommand || snap.ppMoving || snap.homingActive || snap.cspMoving
     );
     const canEnable = hasDrive
+      && hasControl
       && snap.connected
       && snap.state !== "ERROR"
       && snap.state !== "SWITCHING";
     const canSelectAdapter = !snap.enableRequested
+      && hasControl
       && !snap.enabled
       && !snap.velocityCommand
       && !hasMotion
       && !snap.weldingCommandActive
       && snap.state !== "SWITCHING";
     const canSwitchMode = hasDrive
+      && hasControl
       && snap.connected
       && !snap.enableRequested
       && !snap.enabled
       && snap.state !== "ERROR"
       && snap.state !== "SWITCHING";
-    const canJog = velocityModes.has(mode) && snap.enableRequested && snap.state !== "ERROR";
+    const canJog = hasControl && velocityModes.has(mode) && snap.enableRequested && snap.state !== "ERROR";
     const canMovePp = mode === "pp"
+      && hasControl
       && snap.enabled
       && !snap.ppMoving
       && snap.state !== "ERROR";
     const canHome = mode === "hm"
+      && hasControl
       && snap.enabled
       && !snap.homingActive
       && snap.state !== "ERROR";
     const canMoveCsp = mode === "csp"
+      && hasControl
       && snap.enabled
       && !snap.cspMoving
       && snap.state !== "ERROR";
     const weldingConnected = snap.weldingConnected ?? (hasWelding && snap.connected);
     const canControlWelding = hasWelding
+      && hasControl
       && weldingConnected
       && snap.state !== "ERROR"
       && snap.state !== "SWITCHING";
@@ -508,7 +516,7 @@
       "weldingVoltageOrStrength",
     ].forEach((id) => { $(id).disabled = !canControlWelding; });
     $("startWelding").disabled = !canStartWelding;
-    $("stopWelding").disabled = !hasWelding || !snap.weldingCommandActive;
+    $("stopWelding").disabled = !hasControl || !hasWelding || !snap.weldingCommandActive;
     $("jogHint").textContent = !snap.enableRequested
       ? "请先打开驱动使能"
       : "按住方向按钮运行，松开停止";
@@ -926,6 +934,7 @@
     socket = new WebSocket("ws://127.0.0.1:8765");
     socket.onopen = () => {
       $("adapterHint").textContent = "已连接本地后端，正在读取网卡...";
+      api("acquire_control");
       api("list_adapters");
     };
     socket.onmessage = (event) => {
@@ -933,6 +942,10 @@
         const message = JSON.parse(event.data);
         if (message.type === "state") render(message.data);
         if (message.type === "adapters") renderAdapters(message.data);
+        if (message.type === "control") {
+          hasControl = message.owned === true;
+          updateControls();
+        }
         if (message.type === "ack") pendingCommand = "";
         if (message.type === "error") {
           requestedMode = snap.motionMode || "pv";
@@ -953,6 +966,7 @@
       }
     };
     socket.onclose = () => {
+      hasControl = false;
       stopMotionHeartbeat();
       renderAdapters([], false);
       setTimeout(connectStream, 1000);

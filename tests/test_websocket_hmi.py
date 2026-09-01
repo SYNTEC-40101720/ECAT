@@ -8,6 +8,22 @@ import pytest
 import dm3c_ecat.websocket_hmi as websocket_hmi
 
 
+class FakeConnection:
+    def __init__(self, name):
+        self.name = name
+        self.messages = []
+        self.remote_address = name
+
+    async def send(self, message):
+        self.messages.append(message)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        raise StopAsyncIteration
+
+
 def test_run_listens_before_starting_runtime(monkeypatch):
     events = []
 
@@ -266,3 +282,75 @@ def test_shutdown_requires_matching_token():
 
     assert response == {"type": "ack", "command": "shutdown", "accepted": True}
     assert gateway.shutdown_event.is_set()
+
+
+def test_only_one_client_can_acquire_control_and_observers_cannot_command():
+    runtime = MagicMock()
+    gateway = websocket_hmi.WebSocketHmi(runtime)
+    controller = FakeConnection("controller")
+    observer = FakeConnection("observer")
+
+    response = asyncio.run(
+        gateway.handle_command({"command": "acquire_control"}, controller)
+    )
+    assert response["accepted"] is True
+    assert response["owned"] is True
+
+    response = asyncio.run(
+        gateway.handle_command({"command": "acquire_control"}, observer)
+    )
+    assert response == {
+        "type": "control",
+        "command": "acquire_control",
+        "accepted": False,
+        "reason": "control is already held",
+    }
+    with pytest.raises(ValueError, match="control ownership required"):
+        asyncio.run(gateway.handle_command({"command": "stop"}, observer))
+    runtime.stop_motion.assert_not_called()
+
+
+def test_observer_disconnect_does_not_stop_controller():
+    runtime = MagicMock()
+    runtime.snapshot.return_value = {}
+    gateway = websocket_hmi.WebSocketHmi(runtime)
+    controller = FakeConnection("controller")
+    observer = FakeConnection("observer")
+
+    asyncio.run(gateway.handle_command({"command": "acquire_control"}, controller))
+    asyncio.run(gateway.client(observer))
+
+    assert gateway.control_owner is controller
+    runtime.stop.assert_not_called()
+
+
+def test_controller_disconnect_releases_control_and_stops_runtime():
+    runtime = MagicMock()
+    runtime.snapshot.return_value = {}
+    gateway = websocket_hmi.WebSocketHmi(runtime)
+    controller = FakeConnection("controller")
+
+    asyncio.run(gateway.handle_command({"command": "acquire_control"}, controller))
+    asyncio.run(gateway.client(controller))
+
+    assert gateway.control_owner is None
+    runtime.stop.assert_called_once_with()
+
+
+def test_release_control_stops_motion_and_makes_control_available():
+    runtime = MagicMock()
+    gateway = websocket_hmi.WebSocketHmi(runtime)
+    controller = FakeConnection("controller")
+
+    asyncio.run(gateway.handle_command({"command": "acquire_control"}, controller))
+    response = asyncio.run(
+        gateway.handle_command({"command": "release_control"}, controller)
+    )
+
+    assert response == {
+        "type": "control",
+        "command": "release_control",
+        "accepted": True,
+    }
+    runtime.stop_motion.assert_called_once_with()
+    assert gateway.control_owner is None

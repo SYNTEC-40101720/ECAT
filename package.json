@@ -1,14 +1,22 @@
 {
   "name": "ecat-test-electron",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Electron HMI for the ECAT Test WebSocket backend",
+  "author": {
+    "name": "SYNTEC"
+  },
   "main": "electron/main.cjs",
   "scripts": {
     "start": "electron .",
-    "dev": "electron ."
+    "dev": "electron .",
+    "test": "node --test tests/backend_lifecycle.test.cjs",
+    "build:backend": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-backend.ps1",
+    "build:release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-release.ps1",
+    "validate:release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-release.ps1"
   },
   "devDependencies": {
-    "electron": "^38.0.0"
+    "electron": "^38.0.0",
+    "electron-builder": "^26.15.3"
   }
 }

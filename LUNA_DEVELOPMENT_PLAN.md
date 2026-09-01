@@ -1,10 +1,10 @@
 # ECAT Luna 开发执行计划
 
-最后更新：2026-08-25
+最后更新：2026-08-26
 
 ## 使用方式
 
-本文件用于把后续软件工作尽量交给 Luna 独立完成。Luna 每次只领取一个批次，先阅读
+本文件记录已完成的软件批次以及仍受外部条件限制的后续工作。Luna 每次只领取一个批次，先阅读
 `PROJECT_REVIEW_AND_ROADMAP.md`、`DEVELOPMENT_STATE.md`、本文件和当前 Git diff，完成
 代码、测试、文档和交接记录后停止，不跨批次顺手重构。
 
@@ -46,13 +46,13 @@ python -m pytest -q tests/test_runtime_interface.py tests/test_welding.py
 python -m pytest -q
 ```
 
-本批结果（2026-08-25）：聚焦测试 `43 passed`，全量测试 `73 passed`。仅使用
+历史批次结果（2026-08-25）：聚焦测试 `43 passed`，全量测试 `73 passed`。仅使用
 mock/fake 主站和从站；真实网卡、驱动、I/O、焊机、急停、STO、断网和强制退出后的
 物理停止仍待用户现场验收。
 
 ### L2：WebSocket 单控制客户端所有权
 
-状态：`待 Luna`
+状态：`完成（软件验证）`
 
 目标：观察客户端不能发控制命令，断开观察客户端不能停止控制客户端的动作。
 
@@ -72,9 +72,13 @@ python -m pytest -q tests/test_websocket_hmi.py
 python -m pytest -q
 ```
 
+本批结果（2026-08-26）：`python -m pytest -q tests/test_websocket_hmi.py` 为
+`16 passed`，并通过 `node --check src/dm3c_ecat/web/app.js`。控制者断开会停止
+Runtime，观察者断开不会停止控制者；多浏览器连接和现场停止响应仍待用户验收。
+
 ### L3：统一或移除旧 HTTP 控制入口
 
-状态：`待 Luna`
+状态：`完成（软件验证）`
 
 目标：消除 HTTP 与 WebSocket 在类型、字段、单位和安全行为上的双实现。
 
@@ -96,9 +100,12 @@ python -m pytest -q
 python -m compileall -q src tests start_ecat_test.py
 ```
 
+本批结果（2026-08-26）：移除 `ecat-hmi` HTTP/SSE 控制脚本及 Handler，保留
+Electron WebSocket 控制入口和 `ecat-probe` 诊断入口；L3 窄回归 `59 passed`。
+
 ### L4：Electron 后端生命周期测试
 
-状态：`待 Luna`
+状态：`完成（软件验证）`
 
 目标：后端未就绪、异常退出和窗口关闭都可观测且不可误进入控制状态。
 
@@ -121,9 +128,12 @@ python -m pytest -q
 
 如项目尚无 JavaScript 测试框架，Luna 可选择 Node 内建 `node:test`，避免引入大型依赖。
 
+历史批次结果（2026-08-26）：抽取 `electron/backend_lifecycle.cjs`，覆盖重复启动、
+WebSocket ready 握手、优雅 shutdown 和超时 kill；`npm test` 为 `4 passed`。
+
 ### L5：设备 Revision 与 PDO 映射可信化
 
-状态：`待 Luna，需用户提供或确认设备事实`
+状态：`部分完成（软件验证，仍需设备事实）`
 
 目标：未知 Revision 不自动套用已知 profile，PDO 映射不符时拒绝进入 OP。
 
@@ -138,9 +148,14 @@ python -m pytest -q
 
 验收：PDO 任一项不匹配的测试必须失败关闭；全部模拟测试和静态检查通过。
 
+本批结果（2026-08-26）：DM3C/KaiFull profile 绑定已记录 Revision `0x0001`，
+驱动配置后回读 `0x1C12:01`、`0x1C13:01` assignment；未知/不匹配 Revision 和
+assignment mismatch 有测试覆盖。ESI 条目位宽/顺序及 HAUTO、DECOWELL、麦格米特
+现场 Revision 尚缺足够一致证据，保留为待实机/协议资料验收，未猜测映射。
+
 ### L6：CSP 软件保护
 
-状态：`待 Luna，实机启用前必须用户验收`
+状态：`完成（软件验证，实机启用前必须用户验收）`
 
 目标：CSP 在软件侧具备速度、加速度、跟随误差和周期异常保护。
 
@@ -153,9 +168,15 @@ python -m pytest -q
 
 禁止：声称 Windows/Python 10 ms 循环具有实时保证、绕过 `0x6502` 能力检查。
 
+本批结果（2026-08-26）：Runtime 在 CSP 轨迹提交前校验位置、持续时间、推导速度和
+推导加速度；默认限制为速度 `10000`、加速度 `100000`、跟随误差 `1000` 位置单位、
+最大观测周期 `0.020s`。运行中使用实际位置反馈检查跟随误差和周期超限，异常锁定
+`ERROR`、清除命令并发送禁能安全帧。新增确定性边界/反向/非法时长/超限测试；未改变
+`0x6502` 能力与 profile 交集规则，未验证 CSP 的驱动仍不可用。窄测为 `15 passed`。
+
 ### L7：混合总线切换互锁
 
-状态：`待 Luna`
+状态：`完成（软件验证，仍需实机验收）`
 
 目标：重映射或模式切换前，所有设备命令和反馈都处于安全状态。
 
@@ -165,11 +186,16 @@ python -m pytest -q
 - 切换前发送安全输出并验证严格 WKC；失败时拒绝进入 PRE-OP。
 - 增加 drive+I/O、drive+welding、drive+I/O+welding 的模拟测试。
 
+本批结果（2026-08-26）：模式和网卡切换共用安全互锁；活动驱动、运动命令/反馈、
+焊机命令/焊接反馈或非零数字输出会被拒绝。安全帧清零驱动、I/O 和焊机输出，且
+严格要求 `WKC == expected WKC`；WKC 失败会锁定 `ERROR`，不进入 PRE-OP 或重映射。
+HAUTO 运行期部分 WKC 例外未用于切换安全帧。L7 窄测 `10 passed`，未连接真实设备。
+
 禁止：在活动焊接、非零输出或运动反馈存在时重建映射。
 
 ### L8：SYNTEC 域控发布链路
 
-状态：`待 Luna，最终安装由用户验收`
+状态：`部分完成（配置和后端产物完成，Electron 安装包受网络阻塞）`
 
 目标：生成不依赖系统 Python/开发目录的 Electron + Python 后端安装产物。
 
@@ -181,13 +207,16 @@ python -m pytest -q
 - Python version resource 使用 `000004B0` 和 Translation `[0, 1200]`。
 - Electron builder 通过 `extraResources` 携带后端、Python 依赖和必要 ESI。
 - 主进程开发态与 packaged 态分别解析后端路径，增加启动握手和错误提示。
-- 自动检查文件、版本信息、`_internal` 依赖、安装包内容和本机启动烟雾测试。
+- 自动检查文件、版本信息和后端 `_internal` 依赖；安装包内容和 packaged GUI 烟雾测试须在安装包生成后执行。
 
 禁止：UPX、直接依赖目标机 `py`、从中文/空格路径执行 PyInstaller、引入 `ctypes`
 Windows API 绕过策略。
 
-阻塞信息：开始本批前由用户确认最终产品名、版本号和发布目录；未确认时默认候选为
-`SYNTEC-ECAT-Test`、`1.0.0.0`，但不得直接发布。
+本批默认参数（待用户复核）：产品名 `SYNTEC-ECAT-Test`，版本 `1.0.0.0`（package.json
+SemVer 为 `1.0.0`），发布目录 `D:\Release\SYNTEC-ECAT-Test`，发布年 `2026`，目标
+`win-x64`，Electron GUI 无控制台。Python 后端 one-dir 构建已完成，Electron 安装产物
+因下载 Electron `38.8.6` 网络请求超时未完成；域控机器上的签名、白名单、安装、升级、
+卸载和现场启动仍待用户验收。
 
 ## Luna 每批提示词
 

@@ -9,10 +9,12 @@ import pysoem
 
 from .device_profiles import (
     DriveProfile,
+    RemoteIoProfile,
     get_drive_profile,
     get_remote_io_profile,
     get_welding_profile,
     initialize_remote_io_modules,
+    is_tolerated_mapping_error,
     resolve_remote_io_profile,
     resolve_default_interface,
 )
@@ -65,6 +67,35 @@ def ensure_preop(master: object) -> None:
         raise RuntimeError(f"slave(s) did not reach PRE-OP: 0x{reached:04X}")
 
 
+def map_process_data(
+    master: pysoem.Master,
+    *,
+    overlap: bool,
+    io_entries: list[tuple[int, object, RemoteIoProfile]],
+) -> int:
+    mapper = master.config_overlap_map if overlap else master.config_map
+    try:
+        return mapper()
+    except pysoem.ConfigMapError as exc:
+        errors = getattr(exc, "error_list", ())
+        for index, _slave, profile in io_entries:
+            if errors and all(
+                is_tolerated_mapping_error(error, profile, index)
+                for error in errors
+            ):
+                mapped_size = sum(
+                    len(candidate.output) + len(candidate.input)
+                    for candidate in master.slaves
+                )
+                print(
+                    f"WARNING: ignoring known fixed-PDO mapping SDO error for "
+                    f"{profile.name} at slave {index}; mapped process image is "
+                    f"{mapped_size} bytes."
+                )
+                return mapped_size
+        raise
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Read-only pysoem DM3C probe")
     parser.add_argument("interface", nargs="?")
@@ -105,7 +136,11 @@ def main() -> int:
         ]
         io_entries = []
         for index, slave in enumerate(master.slaves, start=1):
-            profile = get_remote_io_profile(slave.man, slave.id)
+            profile = get_remote_io_profile(
+                slave.man,
+                slave.id,
+                get_int(slave, "rev"),
+            )
             if profile is not None:
                 io_entries.append((index, slave, profile))
         welding_entries = [
@@ -152,7 +187,11 @@ def main() -> int:
         use_overlap_map = args.configure_velocity_pdo or bool(
             welding_entries and (drive_entries or io_entries)
         )
-        io_map_size = master.config_overlap_map() if use_overlap_map else master.config_map()
+        io_map_size = map_process_data(
+            master,
+            overlap=use_overlap_map,
+            io_entries=io_entries,
+        )
 
         if args.configure_velocity_pdo:
             master.state = pysoem.SAFEOP_STATE
@@ -189,7 +228,7 @@ def main() -> int:
             print(f"  PDO    : Rx {output_size} bits, Tx {input_size} bits")
 
             drive_profile = get_drive_profile(vendor, product)
-            io_profile = get_remote_io_profile(vendor, product)
+            io_profile = get_remote_io_profile(vendor, product, revision)
             welding_profile = get_welding_profile(vendor, product)
             if io_profile is not None:
                 resolved_profile = resolved_io_profiles.get(index, io_profile)
@@ -229,7 +268,11 @@ def main() -> int:
                 )
             supported_profile = get_drive_profile(slave.man, slave.id)
             supported_profile = supported_profile or resolved_io_profiles.get(index)
-            supported_profile = supported_profile or get_remote_io_profile(slave.man, slave.id)
+            supported_profile = supported_profile or get_remote_io_profile(
+                slave.man,
+                slave.id,
+                revision,
+            )
             supported_profile = supported_profile or get_welding_profile(slave.man, slave.id)
             if supported_profile is not None and (
                 len(slave.output) != supported_profile.rx_bytes

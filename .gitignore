@@ -1,11 +1,13 @@
 # Python generated files
 __pycache__/
 *.py[cod]
+*.egg-info/
 .pytest_cache/
 .mypy_cache/
 
 # Node/Electron dependencies and build output
 node_modules/
+build/
 dist/
 release/
 out/

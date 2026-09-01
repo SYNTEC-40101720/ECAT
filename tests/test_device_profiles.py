@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, call
 
+import pysoem
 import pytest
 
 import dm3c_ecat.device_profiles as device_profiles
@@ -60,6 +61,18 @@ def test_drive_profiles_expose_only_mapped_motion_modes():
     )
 
 
+def test_drive_profile_rejects_unknown_revision():
+    profile = device_profiles.DRIVE_PROFILES[1]
+
+    assert profile.revision == 0x0001
+    assert device_profiles.get_drive_profile(
+        profile.vendor, profile.product, 0x0002
+    ) is None
+    assert device_profiles.get_drive_profile(
+        profile.vendor, profile.product, profile.revision
+    ) is profile
+
+
 def test_csp_and_homing_profile_process_image_lengths():
     dm3c, kaifull = device_profiles.DRIVE_PROFILES
 
@@ -78,6 +91,48 @@ def test_hauto_remote_io_profile_matches_esi_process_image():
     assert profile.tx_pdo == 0x1A00
     assert (profile.rx_bytes, profile.tx_bytes) == (2, 2)
     assert (profile.input_channels, profile.output_channels) == (16, 16)
+
+
+def test_solidot_ec4_profile_matches_bool_esi_and_revision():
+    profile = device_profiles.get_remote_io_profile(
+        0x00884443,
+        0x00000004,
+        0x00000001,
+    )
+
+    assert profile is device_profiles.REMOTE_IO_PROFILES[2]
+    assert profile.name == "Solidot EC4-1616A 16DI/16DO"
+    assert (profile.rx_pdo, profile.tx_pdo) == (0x1600, 0x1A00)
+    assert (profile.rx_bytes, profile.tx_bytes) == (2, 2)
+    assert (profile.input_channels, profile.output_channels) == (16, 16)
+    assert profile.tolerated_mapping_sdo_errors == ((0x1C00, 0, 0x06020000),)
+    assert (
+        device_profiles.get_remote_io_profile(0x00884443, 0x00000004, 0x00000002)
+        is None
+    )
+
+
+def test_solidot_ec4_mapping_error_filter_is_exact():
+    profile = device_profiles.REMOTE_IO_PROFILES[2]
+    expected = pysoem.SdoError(
+        1,
+        0x1C00,
+        0,
+        0x06020000,
+        "The object does not exist in the object directory",
+    )
+
+    assert device_profiles.is_tolerated_mapping_error(expected, profile, 1)
+    assert not device_profiles.is_tolerated_mapping_error(
+        pysoem.SdoError(2, 0x1C00, 0, 0x06020000, "wrong slave"),
+        profile,
+        1,
+    )
+    assert not device_profiles.is_tolerated_mapping_error(
+        pysoem.SdoError(1, 0x1C12, 0, 0x06020000, "wrong object"),
+        profile,
+        1,
+    )
 
 
 def test_decowell_remote_io_profile_matches_detected_module_pair():

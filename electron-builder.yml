@@ -1,7 +1,21 @@
-appId: com.ecat.test
-productName: ECAT Test
+appId: com.syntec.ecat.test
+productName: SYNTEC-ECAT-Test
+buildVersion: 1.0.0.0
+copyright: Copyright © SYNTEC 2026
 files:
   - electron/**
   - src/dm3c_ecat/web/**
   - package.json
 asar: true
+extraResources:
+  - from: build/backend-dist/SYNTEC-ECAT-Test-Backend
+    to: backend
+  - from: ESI
+    to: esi
+win:
+  target:
+    - nsis
+  executableName: SYNTEC-ECAT-Test
+  artifactName: SYNTEC-ECAT-Test-Setup-${version}.${ext}
+nsis:
+  artifactName: SYNTEC-ECAT-Test-Setup-${version}.${ext}

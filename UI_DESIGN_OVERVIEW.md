@@ -44,7 +44,7 @@ npm install
 py start_ecat_test.py             # 推荐：Electron UI + Python WebSocket 后端
 # 或 npm start
 ```
-> 需在 Windows + 已安装 Npcap + pysoem 的环境运行（本机需真实 EtherCAT 硬件验证）。
+> 需在 Windows + 已安装 Npcap + pysoem 的环境运行。页面已通过软件静态检查；安装包/packaged GUI 烟雾测试因 Electron `38.8.6` 下载超时未完成，真实浏览器布局、网卡和设备动作仍需分别验证。
 
 ## 6. 文件清单
 - `electron/main.cjs` — Electron 主进程与 Python 后端生命周期

@@ -1,6 +1,15 @@
+
+### L6 CSP 软件保护
+
+- Runtime 已在 CSP 轨迹提交前限制推导速度/加速度，并在实际位置反馈后检查跟随误差
+  与周期超限；异常锁定 `ERROR`、清除命令并发送禁能安全帧。
+- 默认限制为速度 `10000`、加速度 `100000`、跟随误差 `1000`、周期 `20ms`。CSP
+  能力仍必须同时满足 profile PDO 与 `0x6502`，未验证 profile 不会自动开放。
+- 模拟测试 `15 passed`；Windows/Python 周期实时性、驱动单位、同步行为和机械安全
+  链路不由软件测试替代，仍需用户在声明 CSP 能力的设备上低速验收。
 # ECAT 项目审查与后续开发路线图
 
-最后更新：2026-08-25
+最后更新：2026-09-01
 
 ## 文档用途
 
@@ -13,12 +22,15 @@
 - 架构：Python/`pysoem` EtherCAT Runtime + WebSocket + Electron HMI。
 - Python：要求 3.12 及以上；`pysoem==1.1.13`、`websockets>=14,<16`。
 - 前端：Electron 38，静态页面位于 `src/dm3c_ecat/web/`。
-- 支持设备：Leadshine DM3C、KaiFull SSD60N、HAUTO DIO、DECOWELL 模块化 I/O、
+- 支持设备：Leadshine DM3C、KaiFull SSD60N、HAUTO DIO、Solidot EC4-1616A、DECOWELL 模块化 I/O、
   麦格米特 EtherCAT 焊机。
-- 审查初始基线：`python -m pytest -q` 为 `48 passed`；本轮修复后为 `73 passed`。
-  Python compileall、
-  `node --check src/dm3c_ecat/web/app.js`、`python -m pip check` 均通过。
-- `npm run build` 失败：当前没有 `build` 脚本，也没有完整的 Python 后端随包方案。
+- 历史审查基线：`48 passed`；L1 完成时为 `73 passed`。历史收尾记录曾为 `79 passed`、
+  `npm test` `4 passed`；当前最终验证为 Python `98 passed`、Node `6 passed`，
+  Python compileall、全部项目 JS/CJS 语法检查、
+  `python -m pip check` 和 `git diff --check` 均通过。
+- L8 已加入 `build:backend`、`build:release`、`validate:release`，并声明独立的 PyInstaller
+  构建依赖；后端产物验证完成。Electron builder 因下载 Electron `38.8.6` 网络超时未生成
+  安装产物，不把开发态或后端单独构建写成安装包验证。
 - 当前工作区包含用户未提交的源码、测试、文档和焊机功能改动。后续不得擅自回滚。
 
 ## 已确认 Bug
@@ -88,20 +100,20 @@ Electron 关闭时直接调用 `backend.kill()`，可能跳过 Python `finally` 
 要求：驱动和焊机使用严格期望 WKC；HAUTO 若必须容忍部分 WKC，应作为明确的设备级
 例外，同时读取从站状态和 AL 状态，不得把该策略泛化到焊机。
 
-### P1：WebSocket/HTTP 输入校验可被类型强转绕过
+### P1：WebSocket 输入校验可被类型强转绕过
 
-位置：`src/dm3c_ecat/websocket_hmi.py`、`src/dm3c_ecat/hmi.py` 的 HTTP Handler。
+位置：`src/dm3c_ecat/websocket_hmi.py`（现行控制入口）。旧 HTTP Handler 已移除。
 
-已复现：JSON 字符串 `"false"` 经 `bool()` 转换后为 `True`；JSON 数组进入
+已复现：JSON 字符串 `"false"` 经 `bool()` 转换后为 `True`；JSON 数组进入旧版
 `handle_command()` 会触发未捕获的 `AttributeError`。旧 HTTP PP 接口还把加减速时间
-转为整数，与 WebSocket 的浮点秒数不一致。
+转为整数，与 WebSocket 的浮点秒数不一致；这些旧入口现已删除。
 
 要求：先验证消息必须是 JSON object，再进行严格 bool、整数、有限浮点数和范围校验；
-统一 HTTP/WebSocket 字段与单位，并限制请求体大小。控制服务默认只绑定 loopback。
+控制服务默认只绑定 loopback。旧 HTTP/SSE 不再作为兼容入口。
 
-当前状态：WebSocket 命令入口已完成 JSON object、字段集合、字符串、严格 bool、整数和
-有限浮点数校验；对应非法形状、字符串 bool、NaN 和未知字段测试已加入。HTTP 入口仍待
-统一，不能将本项整体标记为完成。
+当前状态：旧 HTTP/SSE 控制入口已移除，WebSocket 命令入口完成 JSON object、字段集合、
+字符串、严格 bool、整数和有限浮点数校验；对应非法形状、字符串 bool、NaN 和未知字段
+测试已加入。
 
 ### P1：CLI Jog 使用错误的反馈方向和过程数据 API
 
@@ -118,12 +130,11 @@ Electron 关闭时直接调用 `backend.kill()`，可能跳过 Python `finally` 
 当前状态：CLI Jog 已从 `slave.input` 解码状态字，等待/初始化/运行/退出路径统一使用
 `send_overlap_processdata()`，并增加速度上限、WKC 和 Fault 检查；对应测试已加入。
 
-### P1：Electron 发布链路不完整
+### P1：Electron 发布链路不完整（当前为外部阻塞）
 
 位置：`package.json`、`electron-builder.yml`、`electron/main.cjs`。
 
-现状：只有 `start/dev` 脚本；builder 配置仅包含 Electron 和 Web 文件；启动依赖目标机
-存在 `py`、项目源码及 Python 包。当前配置不能形成可独立运行的安装包。
+现状：发布配置、后端随包和生命周期已完成；本次因 Electron `38.8.6` 下载网络超时，尚未形成可验收的安装包。默认产品名、版本、输出目录仍需用户复核。
 
 要求：确定 Python 后端交付方式后再补打包。推荐将后端打成独立、可审计的可执行文件，
 放入 `extraResources`，主进程按 `process.resourcesPath` 启动；加入启动握手、异常退出
@@ -149,18 +160,21 @@ Electron 关闭时直接调用 `backend.kill()`，可能跳过 Python `finally` 
 
 ### 混合总线互锁
 
-- 模式和网卡切换检查 `welding_command_active`，但没有完整检查焊机反馈仍在焊接的
-  `welding_active`。
-- 模式切换没有要求数字输出 mask 为零。
-- 进入 PRE-OP 并重建 FMMU/Sync Manager 会影响同总线其他设备，因此切换前必须确认
-  所有设备已经进入安全状态。
+- 模式和网卡切换现在统一检查驱动未使能、无运动命令/反馈、焊机命令与焊接反馈均为
+  非活动、数字输出 mask 为零；任一条件不满足即拒绝切换。
+- 切换前发送驱动禁能、I/O 零输出和焊机零命令的安全帧，并严格验证完整 WKC。WKC
+  失败锁定 `ERROR`，不会进入 PRE-OP 或重建 FMMU/Sync Manager；HAUTO 运行期部分
+  WKC 例外不传播到安全帧。
+- L7 模拟测试已覆盖 drive+I/O、drive+welding、drive+I/O+welding 及 WKC 失败；
+  真实混合拓扑、从站状态和物理安全链路仍待现场验收。
 
-### probe 与旧 HTTP HMI
+### probe 与已移除的旧 HTTP HMI
 
 - `ecat-probe` 名称和模块说明称为只读，但模块初始化和 PDO 配置选项会写 SDO。
 - 模块化 I/O 未指定初始化时，probe 只给警告后继续映射，应在过程数据测试前失败关闭。
-- `ecat-hmi` HTTP/SSE 入口与 Electron WebSocket 入口已经出现字段和单位差异。应删除
-  废弃入口，或抽取共享命令 schema，避免维护两套控制协议。
+- `ecat-hmi` HTTP/SSE 入口已从 `pyproject.toml` 和源码入口移除；Electron WebSocket
+  是唯一控制协议，`ecat-probe` 仅用于诊断。历史差异保留在本节作为审查记录，不应再按
+  当前缺陷修复。
 
 ## 本轮已完成记录（2026-08-25）
 
@@ -181,10 +195,28 @@ Electron 关闭时直接调用 `backend.kill()`，可能跳过 Python `finally` 
   安全输出失败和线程异常退出测试；HAUTO 部分 WKC 继续限定为 profile 级例外。
 - Runtime 异常会停止线程、锁定 `ERROR` 并记录原始异常；最终安全输出传输失败会进入
   可诊断状态。
-- 验证结果：聚焦命令 `python -m pytest -q tests/test_runtime_interface.py tests/test_welding.py`
+- 历史验证结果：聚焦命令 `python -m pytest -q tests/test_runtime_interface.py tests/test_welding.py`
   为 `43 passed`；`python -m pytest -q` 为 `73 passed`；本批修改文件诊断无错误。
-- 阶段二仍未完成：HTTP 入口统一、真实主站断线恢复、Electron 启动关闭测试和多客户端
-  控制权仍待处理。
+- 阶段二仍未完成：真实主站断线恢复仍待处理；HTTP 入口已移除，Electron 生命周期软件
+  测试已补齐。
+
+## 本轮补充记录（2026-08-26）
+
+- WebSocket 增加单控制客户端所有权：显式 `acquire_control`/`release_control`，观察者
+  不能发送控制命令，观察者断开不会停止控制者；控制者释放或断开会安全停止。
+- Electron HMI 连接后自动申请控制权，并在未获得控制权时禁用运动、I/O 和焊机控制。
+- 历史验证结果：`python -m pytest -q tests/test_websocket_hmi.py` 为 `16 passed`，
+  `node --check src/dm3c_ecat/web/app.js` 通过。
+- 多浏览器真实连接、控制权交接期间的 UI 行为和现场停止响应仍待验收。
+
+## 本轮 L3-L5 记录（2026-08-26）
+
+- L3：移除旧 `ecat-hmi` HTTP/SSE 控制入口，保留 Electron WebSocket 和 `ecat-probe`
+  诊断入口，避免 HTTP 绕过单客户端控制权。
+- L4：抽取 Electron 后端生命周期控制器，增加 ready 握手、重复启动/关闭、优雅关闭和
+  超时强杀 Node 测试。
+- L5：DM3C/KaiFull 绑定已记录 Revision `0x0001`，驱动配置后回读 PDO assignment；
+  ESI/现场 Revision 差异和条目级映射仍待设备证据，不自动猜测。
 
 ## 测试覆盖缺口
 
@@ -195,7 +227,7 @@ Electron 关闭时直接调用 `backend.kill()`，可能跳过 Python `finally` 
 - 严格 JSON 类型、非法消息形状、NaN/Infinity、越界值和超大消息。
 - 多 WebSocket 客户端连接/断开时的控制权和停止策略。
 - CLI Jog 的输入反馈和 overlap 过程数据调用。
-- Electron 启动握手、后端异常退出、窗口关闭和打包产物烟雾测试。
+- 打包产物烟雾测试仅能在安装包生成后执行；域控安装、签名/白名单和真实设备仍待用户。
 - PDO 映射 readback、设备 Revision 选择和混合总线安全切换。
 - 真实急停、STO、限位、安全门和进程强制退出后的停止响应。
 
@@ -231,11 +263,11 @@ Copilot 负责批次审查，用户负责真实设备和域控环境验收。
 
 任务：
 
-1. [x] 引入 WebSocket 命令的严格类型校验；HTTP 入口仍待统一。
+1. [x] 引入 WebSocket 命令的严格类型校验；旧 HTTP/SSE 控制入口已移除。
 2. [x] 修复 CLI Jog。
 3. [x] 增加 Runtime 线程、断线、部分 WKC、故障和退出测试。
-4. 明确单客户端控制权，观察客户端不能因断开而停止另一个控制客户端的命令。
-5. 清理或统一旧 HTTP HMI。
+4. [x] 明确单客户端控制权，观察客户端不能因断开而停止另一个控制客户端的命令。
+5. [x] 清理旧 HTTP HMI，保留 Electron WebSocket 作为唯一控制入口。
 
 验收标准：
 
@@ -259,11 +291,11 @@ Copilot 负责批次审查，用户负责真实设备和域控环境验收。
 - 未知 Revision 不自动套用已知 profile。
 - CSP 超速、跟随误差或周期超限时立即执行安全停止。
 
-### 阶段四：交付与实机验收
+### 阶段四：交付与实机验收（外部验收）
 
 任务：
 
-1. 完成 Python 后端随包、Electron builder、版本信息和日志归档。
+1. 完成 Python 后端随包、Electron builder 配置、版本信息和后端产物验证。
 2. 在干净 Windows/域控环境验证安装、启动、升级和卸载。
 3. 按低速、短时原则验证 PP、混合总线、焊机和异常停止。
 4. 验证外部急停、STO、限位、安全门和断电/断网场景。

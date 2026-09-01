@@ -1,6 +1,56 @@
+## L6 CSP 软件保护（2026-08-26）
+
+- CSP 提交前验证目标位置、有限且 `0.01..60s` 的持续时间，以及由位移/持续时间推导
+	的速度和加速度；默认上限分别为 `10000` 和 `100000` 驱动单位。
+- CSP 运行中读取现有 `0x6064` 实际位置反馈，跟随误差上限为 `1000` 位置单位，观测
+	周期超过 `0.020s` 即锁定 `ERROR`；锁定会清除运动命令并发送 `0x0006` 安全输出。
+- 该保护只作用于已经通过 profile 和 `0x6502` 能力交集的 CSP；未验证 profile 不会因
+	本批代码自动开放。实现不声明 Windows/Python 软件循环的实时保证。
+- 模拟验证：CSP 窄测试 `15 passed`，使用虚拟时钟覆盖边界、超限、反向、非法时长、
+	跟随误差和周期超限；真实驱动、同步周期、单位和安全链路仍待现场验收。
+
+## L7 混合总线切换互锁（2026-08-26）
+
+- Runtime 模式切换和网卡切换前统一检查驱动使能/运动命令与反馈、焊机命令与焊接
+	反馈、数字输出掩码；任一活动或非零状态都会拒绝切换。
+- 安全帧清零驱动控制输出、数字输出和焊机完整命令，并严格要求安全交换的 WKC 等于
+	期望值；WKC 失败锁定 `ERROR`，不会进入 PRE-OP 或执行 PDO 重映射。HAUTO 运行期
+	允许的部分 WKC 不适用于该安全帧。
+- 模拟验证覆盖 drive+I/O、drive+welding、drive+I/O+welding 和 WKC 失败关闭，L7
+	窄测 `10 passed`。真实总线拓扑、从站实际状态、物理输出清零和安全链路仍待验收。
+
+## L8 SYNTEC 域控发布链路（2026-08-26）
+
+- 默认发布参数待用户复核：产品名 `SYNTEC-ECAT-Test`、版本 `1.0.0.0`、目录
+	`D:\Release\SYNTEC-ECAT-Test`、发布年 `2026`、目标 `win-x64`，Electron GUI 无控制台。
+- 新增 PyInstaller one-dir spec、SYNTEC 中性版本资源（`000004B0`、Translation
+	`[0, 1200]`、`Copyright © SYNTEC 2026`）以及后端/发布/产物验证脚本。后端构建已生成
+	自包含 `SYNTEC-ECAT-Test-Backend.exe`，不依赖目标机 Python。
+- Electron packaged 模式从 `process.resourcesPath\backend` 启动后端，开发态仍使用
+	`py -m dm3c_ecat.websocket_hmi`；必要 ESI 由 `extraResources` 携带。Node 路径测试已通过。
+- Electron 安装产物尝试构建至目标目录，但下载 Electron `38.8.6` 时网络请求超时，故
+	安装包和 packaged GUI 烟雾测试未完成。域控最终安装、签名/白名单和真实设备验收仍待用户。
 # ECAT Test 开发状态
 
-最后更新：2026-08-25
+最后更新：2026-09-01
+
+## 最终收尾状态（2026-08-26）
+
+- L2-L4、L6、L7 软件实现完成并通过模拟/协议测试；L5 软件校验完成，但部分 PDO 映射、Revision/固件证据和全部硬件仍待资料或实机确认。
+- L8 发布配置、PyInstaller 后端构建和后端产物验证完成；Electron 安装包因下载 Electron `38.8.6` 在约 15% 后超时未完成，packaged GUI 烟雾测试未完成。
+- 默认产品名 `SYNTEC-ECAT-Test`、版本 `1.0.0.0`、输出目录 `D:\Release\SYNTEC-ECAT-Test` 和发布元数据仍需用户复核；域控安装/签名/白名单验收未完成。
+- 最终验证基线：Python 全量 `98 passed`，Node `6 passed`；历史阶段计数保留在对应记录中。
+
+## WebSocket 控制权（2026-08-26）
+
+- WebSocket 网关维护单一控制客户端；连接必须显式发送 `acquire_control`，已有控制者
+	时其它连接只能观察，控制命令会被拒绝。
+- `release_control` 仅控制者可用，并先调用 Runtime 安全停止；控制者断开时清除所有权
+	并停止 Runtime，观察者断开不会影响控制者。
+- 控制权状态通过独立 `control` 消息广播；Electron HMI 连接后自动申请，未持有控制权
+	时禁用运动、I/O 和焊机控制。
+- 软件模拟验证：`tests/test_websocket_hmi.py` 为 `16 passed`；尚未进行多浏览器真实
+	连接和现场停止链路验收。
 
 ## L1 Runtime 故障测试（2026-08-25）
 
@@ -10,7 +60,7 @@
   原始消息，并执行最终安全输出清理，避免异常线程继续存活。
 - 安全输出交换异常或安全帧 WKC 失配会进入可诊断错误状态；不会声称输出已被现场设备
   接收。
-- 验证：`python -m pytest -q tests/test_runtime_interface.py tests/test_welding.py` 为
+- 历史验证：`python -m pytest -q tests/test_runtime_interface.py tests/test_welding.py` 为
   `43 passed`；`python -m pytest -q` 为 `73 passed`；Pylance 语法检查和文件诊断无错误。
 - 本批只完成软件模拟验证；真实主站断线恢复、过程帧送达、物理输出清零和安全链路仍待
   实机确认。
@@ -65,6 +115,15 @@
 - Runtime 识别为 `digital_io`，直接请求 OP，周期读取 16 路 DI 并控制 16 路 DO；不执行 CiA 402 使能、Jog 或运动模式
 - WebSocket 命令为 `set_output(channel, enabled)`；输出初始为零，停止、客户端断开和 Runtime 退出时清零
 - 真实网卡验证：从站可进入 OP，AL 状态为 `0x0000`；连续过程数据 WKC 观测为 `3,1,1` 重复，运行时保留正 WKC 的 I/O 状态并显示实际/期望 WKC，`WKC <= 0` 才进入错误并清零输出
+
+## 实点 Solidot EC4-1616A 远程 I/O（2026-09-01）
+
+- ESI：`ESI/EC4-XML V1.2/EcatTerminal-EC4_V4.04_BOOL.xml`；随附说明要求同一工程只能选择一个 EC4 XML 变体，不得同时使用 BOOL、UINT、USINT 文件
+- 实际身份：设备名 `EC4-1616A`，Vendor/Product/Revision 为 `0x00884443/0x00000004/0x00000001`
+- 固定 PDO：RxPDO `0x1600`、TxPDO `0x1A00`；每个 PDO 包含 16 个 `BOOL`，过程镜像为 Rx 2 bytes/16 bits、Tx 2 bytes/16 bits
+- 设备不提供 CoE `0x1C00` SyncManager Communication Type 对象。pysoem `config_map()`/`config_overlap_map()` 会先记录 `0x1C00:00` 的 SDO abort `0x06020000`，随后已完成 SII 固定 PDO 映射；Runtime 和 `ecat-probe` 只在从站位置、索引、子索引和 abort code 全部精确匹配时忽略该错误，并继续校验实际缓冲区和总映射长度
+- 现场验收：`py -m dm3c_ecat.probe --cycle-once` 已通过；SAFE-OP=`0x0004`、AL=`0x0000`、期望/实际 WKC=`3/3`、输出 `0000`、输入 `0000`，未请求 OP、未发送运动命令
+- Runtime/HMI 已按 16DI/16DO profile 接入；当前仍需在安全条件下逐路接入负载验证 DO、电气输入极性和断链/退出后的物理清零
 
 ## DECOWELL 模块化远程 I/O
 

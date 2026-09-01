@@ -85,6 +85,7 @@ class DriveProfile:
     tx_pdo: int
     rx_bytes: int
     tx_bytes: int
+    revision: int | None = None
     mode: int = 3
     pp_rx_pdo: int = 0x1601
     pp_rx_bytes: int = 19
@@ -131,14 +132,17 @@ class RemoteIoProfile:
     tx_bytes: int
     input_channels: int
     output_channels: int
+    revision: int | None = None
     expected_module_ids: tuple[int, ...] = ()
     module_init_commands: tuple[tuple[int, int, bytes], ...] = ()
     module_slot_stride: int = 0x10
     allow_partial_wkc: bool = False
+    tolerated_mapping_sdo_errors: tuple[tuple[int, int, int], ...] = ()
 
     @property
     def io_map_bytes(self) -> int:
         return self.rx_bytes + self.tx_bytes
+
 
     def for_detected_modules(
         self, module_ids: tuple[int, ...]
@@ -189,6 +193,20 @@ class RemoteIoProfile:
         )
 
 
+def is_tolerated_mapping_error(
+    error: object,
+    profile: RemoteIoProfile,
+    slave_position: int,
+) -> bool:
+    if not isinstance(error, pysoem.SdoError):
+        return False
+    return (
+        error.slave_pos == slave_position
+        and (error.index, error.subindex, error.abort_code)
+        in profile.tolerated_mapping_sdo_errors
+    )
+
+
 DRIVE_PROFILES = (
     DriveProfile(
         "Leadshine DM3C-EC556",
@@ -198,6 +216,7 @@ DRIVE_PROFILES = (
         0x1A00,
         15,
         19,
+        revision=0x0001,
         mode_pdos=(
             ModePdo(MODE_PV, 0x1602, 15, "velocity"),
             ModePdo(MODE_PP, 0x1601, 19, "profile_position"),
@@ -213,6 +232,7 @@ DRIVE_PROFILES = (
         0x1A00,
         15,
         23,
+        revision=0x0001,
         mode_pdos=(
             ModePdo(MODE_PV, 0x1602, 15, "velocity"),
             ModePdo(MODE_PP, 0x1601, 19, "profile_position"),
@@ -277,6 +297,19 @@ REMOTE_IO_PROFILES = (
             (0x8010, 1, b"\x7F\x00"),
         ),
     ),
+    RemoteIoProfile(
+        "Solidot EC4-1616A 16DI/16DO",
+        0x00884443,
+        0x00000004,
+        0x1600,
+        0x1A00,
+        2,
+        2,
+        16,
+        16,
+        revision=0x00000001,
+        tolerated_mapping_sdo_errors=((0x1C00, 0, 0x06020000),),
+    ),
 )
 
 REMOTE_IO_PROFILES_BY_ID = {
@@ -284,16 +317,32 @@ REMOTE_IO_PROFILES_BY_ID = {
 }
 
 
-def get_drive_profile(vendor: int, product: int) -> DriveProfile | None:
-    return PROFILES_BY_ID.get((vendor, product))
+def get_drive_profile(
+    vendor: int, product: int, revision: int | None = None
+) -> DriveProfile | None:
+    profile = PROFILES_BY_ID.get((vendor, product))
+    if profile is None:
+        return None
+    if profile.revision is not None and revision is not None and revision != profile.revision:
+        return None
+    return profile
 
 
 def get_welding_profile(vendor: int, product: int) -> WeldingProfile | None:
     return WELDING_PROFILES_BY_ID.get((vendor, product))
 
 
-def get_remote_io_profile(vendor: int, product: int) -> RemoteIoProfile | None:
-    return REMOTE_IO_PROFILES_BY_ID.get((vendor, product))
+def get_remote_io_profile(
+    vendor: int,
+    product: int,
+    revision: int | None = None,
+) -> RemoteIoProfile | None:
+    profile = REMOTE_IO_PROFILES_BY_ID.get((vendor, product))
+    if profile is None:
+        return None
+    if profile.revision is not None and revision is not None and revision != profile.revision:
+        return None
+    return profile
 
 
 def read_detected_module_ids(slave: object) -> tuple[int, ...]:

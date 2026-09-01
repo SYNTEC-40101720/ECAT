@@ -15,6 +15,13 @@ from .logging_setup import DEFAULT_LOG_FILE, configure_logging
 
 LOGGER = logging.getLogger("ecat_test.websocket")
 
+CONTROL_COMMANDS = {
+    "select_interface", "jog", "set_mode", "move_pp", "start_homing",
+    "homing_keepalive", "move_csp", "csp_keepalive", "pp_keepalive", "stop",
+    "enable", "disable", "set_ramp", "set_output", "set_welding_command",
+    "start_welding", "stop_welding", "welding_keepalive",
+}
+
 
 def _require_command_object(command: object) -> dict[str, object]:
     if not isinstance(command, dict):
@@ -74,6 +81,7 @@ class WebSocketHmi:
     def __init__(self, runtime: Runtime, shutdown_token: str | None = None) -> None:
         self.runtime = runtime
         self.clients: set[ServerConnection] = set()
+        self.control_owner: ServerConnection | None = None
         self.shutdown_token = shutdown_token
         self.shutdown_event = asyncio.Event()
 
@@ -99,9 +107,48 @@ class WebSocketHmi:
             if isinstance(result, Exception):
                 self.clients.discard(client)
 
-    async def handle_command(self, command: object) -> dict[str, object]:
+    def control_payload(self, connection: ServerConnection | None = None) -> dict[str, object]:
+        return {
+            "type": "control",
+            "available": self.control_owner is None,
+            "owned": connection is not None and self.control_owner is connection,
+        }
+
+    async def broadcast_control_state(self) -> None:
+        await self.broadcast(self.control_payload())
+
+    async def handle_command(
+        self, command: object, connection: ServerConnection | None = None
+    ) -> dict[str, object]:
         command = _require_command_object(command)
         name = _require_string(command, "command")
+        if name == "acquire_control":
+            _validate_fields(command)
+            if connection is None:
+                raise ValueError("control acquisition requires a client connection")
+            if self.control_owner not in (None, connection):
+                return {
+                    "type": "control",
+                    "command": name,
+                    "accepted": False,
+                    "reason": "control is already held",
+                }
+            self.control_owner = connection
+            await self.broadcast_control_state()
+            response = self.control_payload(connection)
+            response.update({"command": name, "accepted": True})
+            return response
+        if name == "release_control":
+            _validate_fields(command)
+            if connection is None or self.control_owner is not connection:
+                raise ValueError("control ownership required")
+            self.runtime.stop_motion()
+            self.control_owner = None
+            await self.broadcast_control_state()
+            return {"type": "control", "command": name, "accepted": True}
+        if connection is not None and name in CONTROL_COMMANDS:
+            if self.control_owner is not connection:
+                raise ValueError("control ownership required")
         if name == "list_adapters":
             _validate_fields(command)
             return {"type": "adapters", "data": self.adapter_payload()}
@@ -245,16 +292,20 @@ class WebSocketHmi:
         try:
             await self.send(connection, {"type": "adapters", "data": self.adapter_payload()})
             await self.send(connection, {"type": "state", "data": self.runtime.snapshot()})
+            await self.send(connection, self.control_payload(connection))
             async for raw_message in connection:
                 try:
                     command = json.loads(raw_message)
-                    response = await self.handle_command(command)
+                    response = await self.handle_command(command, connection)
                 except (KeyError, TypeError, ValueError, RuntimeError) as exc:
                     response = {"type": "error", "error": str(exc)}
                 await self.send(connection, response)
         finally:
             self.clients.discard(connection)
-            self.runtime.stop()
+            if self.control_owner is connection:
+                self.control_owner = None
+                self.runtime.stop()
+                await self.broadcast_control_state()
             LOGGER.info("WebSocket client disconnected")
 
     async def publish(self, logs: Iterable[str]) -> None:

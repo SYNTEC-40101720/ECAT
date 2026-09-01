@@ -6,14 +6,15 @@
 项目不再使用 PySide6。Electron 负责桌面窗口，Python `Runtime` 通过 WebSocket
 提供硬件状态和控制命令。
 
-## 架构
+## 架构（当前实现）
 - **后端** `src/dm3c_ecat/websocket_hmi.py`
   - 复用 `Runtime`；`snapshot()` 返回接口、驱动能力、统一运动状态和 HM/CSP 状态字段。
   - 监听 `ws://127.0.0.1:8765`，复用 `hmi.py` 的 `Runtime`。
-  - JSON 消息支持 `state`、`log`、`adapters`、`ack`、`error`；命令覆盖 PV/PP/HM/CSP。
-  - WebSocket 断开时停止运动；Electron 关闭时终止 Python 后端。
+  - JSON 消息支持 `state`、`log`、`adapters`、`control`、`ack`、`error`；命令覆盖 PV/PP/HM/CSP。
+  - 只允许一个控制客户端；观察者只能接收状态，控制者释放或断开时安全停止。
+  - Electron 关闭时先发送带随机令牌的 shutdown 请求，后端超时才由主进程强杀。
 - **Electron** `electron/main.cjs`
-  - 启动 Python WebSocket 子进程并加载 `src/dm3c_ecat/web/index.html`。
+  - 开发态启动 Python WebSocket 子进程；packaged 态启动随包后端，并加载页面。
 - **前端** `src/dm3c_ecat/web/`
   - `index.html` — 侧边状态栏 + 顶部状态条 + 模式目录 + 单页控制区。
   - `styles.css` — 设计令牌（浅色默认 / `[data-theme="dark"]` 覆盖），统一圆角、间距、阴影、字体。
@@ -39,15 +40,15 @@
 ## 安全行为（沿用后端）
 窗口失焦 / 心跳超时（0.35s）→ 停止当前运动并保持使能；驱动故障 / WKC 异常 / 程序退出 → 停止并禁能。前端在 `blur`、`beforeunload`、`visibilitychange` 时也主动发送停止运动命令。HM/CSP 也有独立运动看门狗。
 
-## 验证
-- `python -m pytest -q`：58 项通过；Python compileall 和
-  `node --check src/dm3c_ecat/web/app.js` 通过。
-- 浏览器检查：桌面模式目录三列、390px 移动端两列，均无横向溢出；旧后端缺少能力字段时只保守开放 PV/PP。
-- 用桩 `pysoem` 把服务跑起来实测：`/`、`/styles.css`、`/app.js`、`/api/status`、`/api/adapters`、`/api/stream`(SSE)、`POST /api/enable` 全部 200，`index.html` 正确引用脚本与样式；SSE 断开不再抛堆栈。
-- 真实硬件需在装好 Npcap 的目标机运行：`py start_ecat_test.py`。
+## 验证与边界
+- 软件验证：WebSocket 命令、控制权、安全停止、Runtime 模拟过程数据和 JavaScript 静态检查。
+- 发布配置和 Python 后端产物验证已完成；Electron 安装包因下载 Electron `38.8.6` 网络超时未完成，因此 packaged GUI 烟雾测试和域控安装验收未完成。
+- 真实浏览器待验证：桌面/移动视口、控制权交接、失焦/隐藏/卸载和关闭窗口时的实际停止响应。
+- 真实网卡与设备待验证：过程帧送达、WKC、驱动/I/O/焊机动作及安全链路。不能将软件测试表述为硬件验收。
+- 运行入口：`py start_ecat_test.py` 或 `npm start`；不再存在 `/api/*`、SSE 或独立 HTTP HMI。
 
 ## 文件清单
-- `src/dm3c_ecat/hmi.py`（扩展后端 + API + SSE）
+- `src/dm3c_ecat/hmi.py`（Runtime 与实时周期）
 - `src/dm3c_ecat/web/index.html`
 - `src/dm3c_ecat/web/styles.css`
 - `src/dm3c_ecat/web/app.js`

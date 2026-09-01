@@ -1,7 +1,7 @@
 # ECAT Test
 
-本项目是通用 EtherCAT 测试工具，使用 Python/`pysoem` 实现测试后端，并以
-Electron + Python WebSocket 作为桌面 HMI 架构。
+通用 EtherCAT 测试工具：Python/`pysoem` Runtime + Electron 桌面 HMI + 本机 WebSocket。
+控制命令只通过 Electron WebSocket 网关发送；旧 `ecat-hmi` HTTP/SSE 入口已移除。
 
 ## 安装
 
@@ -11,23 +11,17 @@ py -m pip install --editable .
 
 确认 Npcap 已安装，并确保没有其他 EtherCAT 主站进程占用同一网卡。
 
-桌面 UI 统一使用下面的 Electron 入口，不再安装或使用 PySide6。
+桌面 UI 不再使用 PySide6。真实 EtherCAT 操作前必须确认 Npcap、网卡占用、急停、STO、
+限位和机械安全条件；自动化测试不等于硬件验收。
 
 程序日志默认写入 `logs/ecat-test.log`，同时输出到控制台。日志包含网卡打开、
 PDO/OP 配置、使能序列、Jog、心跳看门狗、WKC 和异常堆栈。
 
-## Electron + Python + WebSocket 桌面 HMI
-
-安装 Python 包和 Electron 依赖：
+## 安装与启动
 
 ```powershell
 py -m pip install --editable .
 npm install
-```
-
-启动 Electron 桌面 HMI：
-
-```powershell
 py start_ecat_test.py
 ```
 
@@ -35,7 +29,7 @@ py start_ecat_test.py
 只有一个物理网卡时自动使用它；存在多个物理网卡时，Electron HMI 会等待在网卡面板中选择。
 未选定网卡不会启动 EtherCAT 实时线程。网卡只能在驱动未使能且没有运动命令时切换。
 
-也可以直接使用 `npm start` 启动。若需要显式指定 EtherCAT 网卡：
+也可以直接使用 `npm start`。显式指定 EtherCAT 网卡：
 
 ```powershell
 py start_ecat_test.py --interface "\Device\NPF_{网卡 GUID}"
@@ -43,17 +37,28 @@ py start_ecat_test.py --interface "\Device\NPF_{网卡 GUID}"
 
 `--interface` 和环境变量 `ECAT_INTERFACE` 都会覆盖自动探测；显式接口无效时会在运行状态中报告错误。
 
-`start_ecat_test.py` 和 `npm start` 都会进入同一条 Electron 启动流程。Electron
-主进程会自动完成以下流程：
+## SYNTEC 发布
 
-1. 启动 Python 模块 `dm3c_ecat.websocket_hmi`。
-2. Python 在 `ws://127.0.0.1:8765` 提供 EtherCAT 状态和控制命令。
-3. Electron 加载 `src/dm3c_ecat/web/index.html`。
-4. Electron 窗口关闭时终止 Python 后端，WebSocket 客户端断开时停止运动。
+发布默认使用产品名 `SYNTEC-ECAT-Test`、版本 `1.0.0.0`、目标 `win-x64` 和目录
+`D:\Release\SYNTEC-ECAT-Test`；这些参数仍需用户在域控安装前复核。构建路径应保持纯英文且无空格。
 
-因此不需要再单独执行 `main.py`、启动浏览器或单独启动 Python WebSocket。
+```powershell
+npm install
+py -m pip install -r packaging\requirements-build.txt
+npm run build:backend
+npm run build:release
+npm run validate:release
+```
 
-## 命令行工具
+Python 后端由 PyInstaller 生成 one-dir、windowed、`--noupx` 自包含目录；Electron packaged
+模式从 `resources\backend` 启动它，不依赖目标机 Python。域控签名、白名单、安装升级卸载和
+当前后端构建和产物验证已完成；本次 Electron 安装包因下载 Electron `38.8.6` 网络超时未完成，默认产品名、版本、输出目录仍需用户复核，域控安装验收未完成。真实 EtherCAT/安全链路仍需现场验收。
+
+两种启动方式都进入同一 Electron 流程：主进程启动
+`dm3c_ecat.websocket_hmi`，等待 `ws://127.0.0.1:8765` ready 握手后加载页面；关闭窗口
+先请求后端安全退出，2.5 秒超时才强制终止。无需单独启动 Python WebSocket 或浏览器。
+
+## 诊断与测试
 
 只读扫描和状态检查：
 
@@ -82,10 +87,47 @@ ecat-probe --configure-velocity-pdo --cycle-once
 ecat-jog <velocity-in-drive-units> <seconds> --confirm-jog
 ```
 
+本地验证命令：
+
+```powershell
+npm test
+python -m pytest -q
+python -m compileall -q src tests start_ecat_test.py
+node --check electron/main.cjs
+node --check electron/backend_lifecycle.cjs
+node --check src/dm3c_ecat/web/app.js
+python -m pip check
+git diff --check
+```
+
+当前最终基线：Python全量 `98 passed`，Node `6 passed`。Electron 安装包两次构建均因下载超时未完成。
+
 命令行工具在只有一个物理网卡时自动选择；多网卡或没有物理网卡时请把接口名作为位置参数传入。
 命令行 Jog 最长 10 秒，退出或中断时发送零速度并禁能。
 
-## 当前测试配置
+## 当前支持范围与证据边界
+
+已完成并由 mock/fake、静态检查或协议测试自动验证：Runtime 安全停止、CiA 402 状态等待、
+严格 WKC 策略、WebSocket 单控制客户端、Electron ready/shutdown 流程、设备 Revision 和
+PDO assignment 基础校验，以及 PV/PP/HM/CSP 的软件分支。实际结果以
+`DEVELOPMENT_STATE.md` 的最新记录为准。
+
+已做软件验证但仍需真实浏览器或网卡验证：多浏览器控制权交接、页面失焦/隐藏/卸载、窗口
+关闭和断网时的停止响应，以及真实网卡上的过程帧送达。未宣称硬件已验收。
+
+必须实机或厂商资料验证：真实驱动/I/O/焊机动作、PP 位置和单位、HM/CSP 跟随与回零、
+WKC/Revision/逐项 PDO 映射、急停/STO/限位/安全门、域控安装和发布包行为。
+
+设备资料和验收边界见 `DEVELOPMENT_STATE.md`；设计记录见 `UI_DESIGN_OVERVIEW.md` 和
+`WEB_HMI_DESIGN.md`。
+
+## 目录与交付
+
+源码、测试、ESI、设计资料和依赖锁文件属于交付内容；缓存、构建产物和轮转日志由
+`.gitignore` 排除。发布前仍需在干净 Windows/域控环境完成安装、启动、升级、卸载和白名单
+验证，不能把当前开发目录当作安装包。
+
+## 当前设备资料（摘要）
 
 - Leadshine DM3C-EC556：Vendor/Product `0x4321/0x8600`，Rx/Tx `15/19` bytes
 - KaiFull EC2SS3 / SSD60N：Vendor/Product `0x024B/0x0215`，Rx/Tx `15/23` bytes
@@ -103,6 +145,14 @@ ecat-jog <velocity-in-drive-units> <seconds> --confirm-jog
 - Runtime 直接请求 OP，不执行 CiA 402 使能或运动模式；Web HMI 显示 16 路输入并提供 16 路输出开关
 - 输出初始为零；WebSocket 断开、程序退出或点击停止后输出清零
 - 当前硬件连续周期实测 WKC 会在 `3/3` 与 `1/3` 间变化，但从站保持 OP 且 AL 状态为零；运行时将非正 WKC 视为断链，正 WKC 显示为部分响应并继续刷新 I/O
+
+### 实点 Solidot EC4-1616A 远程 I/O
+
+- ESI 使用 `ESI/EC4-XML V1.2/EcatTerminal-EC4_V4.04_BOOL.xml`；同一工程内只能选择一个 EC4 XML 变体，不能混用 BOOL、UINT 和 USINT 文件
+- Vendor/Product/Revision：`0x00884443/0x00000004/0x00000001`，设备名为 `EC4-1616A`
+- 固定 RxPDO `0x1600`、TxPDO `0x1A00`，16 个 BOOL 输出和 16 个 BOOL 输入，过程镜像为输出 2 字节、输入 2 字节
+- 设备没有 CoE `0x1C00` 对象；Runtime/probe 仅对该设备过滤现场确认的 `0x1C00:00`、abort code `0x06020000`，映射长度仍必须校验为 4 字节
+- 现场已验证识别、SAFE-OP、AL=`0x0000`、零输出过程数据 WKC=`3`；尚未接入负载逐路验证 16 路 DO 动作
 
 ### DECOWELL 模块化远程 I/O
 
@@ -154,6 +204,7 @@ npm start
 - `src/dm3c_ecat/hmi.py`：浏览器 HMI 和实时周期主站
 - `src/dm3c_ecat/websocket_hmi.py`：Electron 使用的 Python WebSocket 网关
 - `electron/main.cjs`：Electron 主进程和 Python 后端生命周期管理
+- `electron/backend_lifecycle.cjs`：后端启动握手、优雅关闭和超时强杀
 - `src/dm3c_ecat/probe.py`：扫描、PDO 检查和 SAFE-OP 验证
 - `src/dm3c_ecat/jog.py`：受限命令行 Jog 备用工具
 - `pyproject.toml`：标准 Python 包配置和命令入口
