@@ -151,7 +151,10 @@ def main() -> int:
         modular_io_entries = [
             (index, slave, profile)
             for index, slave, profile in io_entries
-            if profile is not None and profile.module_init_commands
+            if profile is not None and (
+                profile.module_init_commands
+                or profile.module_config_protocol == "f030_array"
+            )
         ]
         resolved_io_profiles = {
             index: profile for index, _slave, profile in io_entries

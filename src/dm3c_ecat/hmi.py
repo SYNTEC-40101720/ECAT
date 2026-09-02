@@ -1152,7 +1152,10 @@ class Runtime:
         io_slave = self._io_device()
         if self.io_profile is None or io_slave is None:
             return
-        if not self.io_profile.module_init_commands:
+        if (
+            not self.io_profile.module_init_commands
+            and self.io_profile.module_config_protocol != "f030_array"
+        ):
             return
 
         self.master.read_state()

@@ -318,9 +318,9 @@ REMOTE_IO_PROFILES = (
         tolerated_mapping_sdo_errors=((0x1C00, 0, 0x06020000),),
     ),
     RemoteIoProfile(
-        "Solidot XB6-EC0002 Modular Coupler",
+        "Solidot XB6S-EC2002 Modular Coupler",
         0x00884443,
-        0x000000B6,
+        0x00005601,
         0x16FF,
         0x1AFF,
         0,
@@ -416,6 +416,9 @@ _XB6_MODULE_TABLE: dict[int, tuple[int, int, int, int]] = {
     0x00000612: (0, 12, 2, 0),   # XB6-0012J  12DO
     0x00000620: (16, 16, 2, 2),  # XB6-1616A  16DI/16DO NPN
     0x00000621: (16, 16, 2, 2),  # XB6-1616B  16DI/16DO PNP
+    # XB6S series (newer firmware, module IDs not in original ESI)
+    0x0000E10C: (0, 32, 4, 0),   # XB6S-0032  32DO
+    0x0000E104: (32, 0, 0, 4),   # XB6S-3200  32DI
 }
 
 
@@ -483,7 +486,10 @@ def _initialize_xb6_modules(
     resolved_profile = resolve_remote_io_profile(slave, profile)
     module_ids = resolved_profile.expected_module_ids
     count = len(module_ids)
-    slave.sdo_write(0xF030, 0, count.to_bytes(1, "little"))
+    # ETG.5001: set SubIndex 0 to 0 first to allow writing elements,
+    # then write each module ID, then set SubIndex 0 to the final count.
+    slave.sdo_write(0xF030, 0, b"\x00")
     for i, mid in enumerate(module_ids, start=1):
         slave.sdo_write(0xF030, i, mid.to_bytes(4, "little"))
+    slave.sdo_write(0xF030, 0, count.to_bytes(1, "little"))
     return resolved_profile

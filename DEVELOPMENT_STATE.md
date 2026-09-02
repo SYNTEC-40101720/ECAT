@@ -125,20 +125,26 @@
 - 现场验收：`py -m dm3c_ecat.probe --cycle-once` 已通过；SAFE-OP=`0x0004`、AL=`0x0000`、期望/实际 WKC=`3/3`、输出 `0000`、输入 `0000`，未请求 OP、未发送运动命令
 - Runtime/HMI 已按 16DI/16DO profile 接入；当前仍需在安全条件下逐路接入负载验证 DO、电气输入极性和断链/退出后的物理清零
 
-## 实点 Solidot XB6-EC0002 插片式模块化远程 I/O（2026-09-02）
+## 实点 Solidot XB6S-EC2002 插片式模块化远程 I/O（2026-09-02）
 
-- ESI：`ESI/active/实点-XB6/EcatTerminal-XB6_V3.22_ENUM.xml`；同一工程只能选择一个 XML 变体（ENUM/UINT/USINT），当前使用 ENUM
-- 实际身份：设备名 `XB6-EC0002`，Vendor/Product/Revision 为 `0x00884443`/`0x000000B6`/`0x00000001`
+- ESI：`ESI/active/实点-XB6/EcatTerminal-XB6_V3.22_ENUM.xml`（ESI 标注为 XB6-EC0002，实际设备为 XB6S-EC2002）
+- 实际身份：设备名 `XB6S-EC2002`，Vendor/Product/Revision 为 `0x00884443`/`0x00005601`/`0x00000001`
+- ESI 中 ProductCode 为 `0x000000B6`，与实际设备 `0x00005601` 不符；ESI 版本可能较旧
 - 架构：ETG.5001 Modular Device Profile，最多 32 个插片模块
 - 耦 合器自身固定 PDO：RxPDO `0x16FF`（2 bytes CouplerCtrl `0xF200`）、TxPDO `0x1AFF`（2 bytes CouplerState `0xF100`）
-- 模块 PDO 按槽位递增（`DependOnSlot`），RxPDO `0x1600 + slot`、TxPDO `0x1A00 + slot`
+- 模块 PDO 按槽位递增（`DependOnSlot`），第一个 DO 模块使用 `0x1601`，第一个 DI 模块使用 `0x1A00`
 - 模块检测：读 `0xF050` Detected Module Ident List
-- 模块配置：写 `0xF030` Configured Module Ident List（标准 ETG.5001 协议，与 DECOWELL 的 `0x8000` 私有方式不同）
-- 支持的数字 I/O 模块：XB6-3200B/A/N(32DI)、XB6-1600B/A(16DI)、XB6-0800B/A(8DI)、XB6-0032B/A/N(32DO)、XB6-0016B/A(16DO)、XB6-0008B/A(8DO)、XB6-VT16(16DO)、XB6-0012J(12DO)、XB6-1616A/B(16DI/16DO)
+- 模块配置：写 `0xF030` Configured Module Ident List（先写 SI0=0 清空，逐个写入模块 ID，最后写 SI0=count）
+- 现场模块组合：
+  - Slot 1: ModuleIdent `0x0000E10C`（32DO，RxPDO `0x1601` 映射 `0x7010:01..20`，4 bytes）
+  - Slot 2: ModuleIdent `0x0000E104`（32DI，TxPDO `0x1A00` 映射 `0x6000:01..20`，4 bytes）
+- 模块 ID `0xE10C`/`0xE104` 不在 ESI 定义的标准模块表中，为 XB6S 系列新模块
+- 过程镜像：Rx 6 bytes（4 DO + 2 耦 合器）、Tx 6 bytes（4 DI + 2 耦 合器）
 - 无 DC 同步配置
+- `ecat-probe --initialize-modular-io --cycle-once` 已验证：模块初始化成功、SAFE-OP=`0x0004`、AL=`0x0000`、WKC=`3/3`、零输出/零输入
 - Runtime 模块配置协议 `f030_array`：检测模块组合后计算总 DI/DO 通道数和 Rx/Tx 字节数（含耦 合器头部），通过 `0xF030` 数组写入模块 ID
 - `_write_io_output` 和 `read_io_inputs` 自动跳过 `coupler_rx_bytes`/`coupler_tx_bytes` 头部偏移
-- 尚未连接真实设备验证；模块组合为任意顺序，不要求重复序列
+- 尚需在安全条件下逐路接入负载验证 DO 输出和 DI 读取
 
 ## DECOWELL 模块化远程 I/O
 
