@@ -416,9 +416,22 @@ _XB6_MODULE_TABLE: dict[int, tuple[int, int, int, int]] = {
     0x00000612: (0, 12, 2, 0),   # XB6-0012J  12DO
     0x00000620: (16, 16, 2, 2),  # XB6-1616A  16DI/16DO NPN
     0x00000621: (16, 16, 2, 2),  # XB6-1616B  16DI/16DO PNP
-    # XB6S series (newer firmware, module IDs not in original ESI)
-    0x0000E10C: (0, 32, 4, 0),   # XB6S-0032  32DO
-    0x0000E104: (32, 0, 0, 4),   # XB6S-3200  32DI
+    # XB6S series (from EcatTerminal-XB6S_V2.1.8_ENUM.xml)
+    0x0000E10C: (32, 0, 0, 4),   # XB6S-3200   32DI
+    0x0000E10D: (32, 0, 0, 4),   # XB6S-3200N  32DI NPN
+    0x0000E10E: (16, 0, 0, 2),   # XB6S-1600   16DI
+    0x0000E10F: (8,  0, 0, 1),   # XB6S-0800    8DI
+    0x0000E104: (0, 32, 4, 0),   # XB6S-0032A  32DO NPN
+    0x0000E105: (0, 32, 4, 0),   # XB6S-0032AN 32DO NPN
+    0x0000E108: (0, 32, 4, 0),   # XB6S-0032B  32DO PNP
+    0x0000E109: (0, 32, 4, 0),   # XB6S-0032BN 32DO NPN
+    0x0000E106: (0, 16, 2, 0),   # XB6S-0016A  16DO NPN
+    0x0000E10A: (0, 16, 2, 0),   # XB6S-0016B  16DO PNP
+    0x0000E107: (0,  8, 1, 0),   # XB6S-0008A   8DO NPN
+    0x0000E10B: (0,  8, 1, 0),   # XB6S-0008B   8DO PNP
+    0x0000E100: (16, 16, 2, 2),  # XB6S-1616A  16DI/16DO NPN
+    0x0000E102: (16, 16, 2, 2),  # XB6S-1616B  16DI/16DO PNP
+    0x0000E110: (0, 12, 2, 0),   # XB6S-0012J/6 12DO
 }
 
 

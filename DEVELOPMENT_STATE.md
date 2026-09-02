@@ -127,18 +127,17 @@
 
 ## 实点 Solidot XB6S-EC2002 插片式模块化远程 I/O（2026-09-02）
 
-- ESI：`ESI/active/实点-XB6/EcatTerminal-XB6_V3.22_ENUM.xml`（ESI 标注为 XB6-EC0002，实际设备为 XB6S-EC2002）
-- 实际身份：设备名 `XB6S-EC2002`，Vendor/Product/Revision 为 `0x00884443`/`0x00005601`/`0x00000001`
-- ESI 中 ProductCode 为 `0x000000B6`，与实际设备 `0x00005601` 不符；ESI 版本可能较旧
+- ESI：`ESI/active/实点-XB6S/EcatTerminal-XB6S_V2.1.8_ENUM.xml`
+- 实际身份：设备名 `XB6S-EC2002`，Vendor/Product/Revision 为 `0x00884443`/`0x00005601`/`0x00000001`（ESI 中 ProductCode 与实际设备一致）
 - 架构：ETG.5001 Modular Device Profile，最多 32 个插片模块
 - 耦 合器自身固定 PDO：RxPDO `0x16FF`（2 bytes CouplerCtrl `0xF200`）、TxPDO `0x1AFF`（2 bytes CouplerState `0xF100`）
 - 模块 PDO 按槽位递增（`DependOnSlot`），第一个 DO 模块使用 `0x1601`，第一个 DI 模块使用 `0x1A00`
 - 模块检测：读 `0xF050` Detected Module Ident List
 - 模块配置：写 `0xF030` Configured Module Ident List（先写 SI0=0 清空，逐个写入模块 ID，最后写 SI0=count）
 - 现场模块组合：
-  - Slot 1: ModuleIdent `0x0000E10C`（32DO，RxPDO `0x1601` 映射 `0x7010:01..20`，4 bytes）
-  - Slot 2: ModuleIdent `0x0000E104`（32DI，TxPDO `0x1A00` 映射 `0x6000:01..20`，4 bytes）
-- 模块 ID `0xE10C`/`0xE104` 不在 ESI 定义的标准模块表中，为 XB6S 系列新模块
+  - Slot 1: `XB6S-3200` ModuleIdent `0x0000E10C`（32DI，TxPDO `0x1A00` 映射 `0x6000:01..20`，4 bytes）
+  - Slot 2: `XB6S-0032A` ModuleIdent `0x0000E104`（32DO，RxPDO `0x1601` 映射 `0x7010:01..20`，4 bytes）
+- 模块 ID 来自 XB6S V2.1.8 ESI；XB6S 系列模块 ID 范围 `0xE1xx`（DI）和 `0xE10x`/`0xE00x`（DO），与老款 XB6 的 `0x06xx` 不同
 - 过程镜像：Rx 6 bytes（4 DO + 2 耦 合器）、Tx 6 bytes（4 DI + 2 耦 合器）
 - 无 DC 同步配置
 - `ecat-probe --initialize-modular-io --cycle-once` 已验证：模块初始化成功、SAFE-OP=`0x0004`、AL=`0x0000`、WKC=`3/3`、零输出/零输入

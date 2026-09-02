@@ -34,7 +34,7 @@ ESI/
 | `雷赛/` | `DM3C-EC系列XML文件.XML` | 雷赛 DM3C-EC 驱动 | `0x4321`/`0x8600` |
 | `HAUTO/` | `HAUTO_AX58100_DIO_IO_MAP_FIX.xml` | HAU TO AX58100 DIO | `0x00000001`/`0x00010200` |
 | `实点-Solidot/` | `EcatTerminal-EC4_V4.04_BOOL.xml` | Solidot EC4-1616A | `0x00884443`/`0x00000004` |
-| `实点-XB6/` | `EcatTerminal-XB6_V3.22_ENUM.xml` | Solidot XB6S-EC2002 插片式耦合器 | `0x00884443`/`0x00005601` |
+| `实点-XB6S/` | `EcatTerminal-XB6S_V2.1.8_ENUM.xml` | Solidot XB6S-EC2002-C 插片式耦合器 | `0x00884443`/`0x00005601` |
 | `DECOWELL/` | `DECOWELL_EX-1100_V1.9.8.xml` | DECOWELL EX-1100 | `0x00444543`/`0x00000001` |
 | `麦格米特/` | `MegmeetESI260416.xml` | 麦格米特焊机 | `0xE000001B`/`0x00000036` |
 | `麦格米特/` | `Megmeet_ENIP_protocol.md` | 麦格米特 ENIP 协议表 | — |
