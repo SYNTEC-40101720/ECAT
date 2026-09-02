@@ -142,6 +142,7 @@ def test_runtime_welding_command_cycle_feedback_and_stop(runtime):
     runtime.welding_slave = slave
     runtime.state = "OPERATIONAL"
     runtime.welding_communication_ready = True
+    runtime._master_open = True
     master.receive_processdata.return_value = 3
 
     runtime.set_welding_command(

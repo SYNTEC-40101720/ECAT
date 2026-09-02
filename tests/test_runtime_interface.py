@@ -194,10 +194,11 @@ def test_mode_switch_sends_zero_frame_and_requires_strict_wkc(runtime):
     runtime.drive_slave = MagicMock()
     runtime.io_slave = MagicMock()
     runtime.drive_slave.output = bytearray(runtime.profile.rx_bytes)
-    runtime.drive_slave.input = bytearray(runtime.profile.tx_bytes)
     runtime.io_slave.output = bytearray(runtime.io_profile.rx_bytes)
+    runtime.drive_slave.input = bytearray(runtime.profile.tx_bytes)
     runtime.io_slave.input = bytearray(runtime.io_profile.tx_bytes)
     runtime.expected_wkc = 3
+    runtime._master_open = True
     runtime.cycle = MagicMock(return_value=3)
     runtime.motion_mode = hmi.MODE_PV
     runtime.master.config_init.return_value = 1
@@ -220,6 +221,7 @@ def test_mode_switch_wkc_failure_latches_error_before_preop(runtime):
     runtime.profile = DRIVE_PROFILES[0]
     runtime.drive_slave = MagicMock()
     runtime.expected_wkc = 3
+    runtime._master_open = True
     runtime.cycle = MagicMock(return_value=2)
     runtime.motion_mode = hmi.MODE_PV
     runtime.pending_mode = hmi.MODE_PP
@@ -449,6 +451,7 @@ def test_remote_io_reads_inputs_and_writes_output_bits(
     runtime.slave = process_slave
     runtime.master = process_master
     runtime.expected_wkc = 3
+    runtime._master_open = True
     runtime.state = "OPERATIONAL"
 
     runtime.set_digital_output(0, True)
@@ -479,14 +482,19 @@ def test_remote_io_rejects_invalid_output_channel(runtime):
         runtime.set_digital_output(16, True)
 
 
-def test_partial_wkc_is_only_allowed_for_hauto_pure_io(runtime):
+def test_partial_wkc_is_only_allowed_for_devices_with_flag(runtime):
     runtime.expected_wkc = 3
     runtime.wkc = 1
 
+    # HAU TO and Solidot both have allow_partial_wkc=True
     runtime.io_profile = REMOTE_IO_PROFILES[0]
     assert runtime._process_wkc_is_valid(pure_io=True) is True
     assert runtime._process_wkc_is_valid() is False
 
+    runtime.io_profile = REMOTE_IO_PROFILES[2]
+    assert runtime._process_wkc_is_valid(pure_io=True) is True
+
+    # DECOWELL does not allow partial WKC
     runtime.io_profile = REMOTE_IO_PROFILES[1]
     assert runtime._process_wkc_is_valid(pure_io=True) is False
 
@@ -577,8 +585,9 @@ def test_remote_io_requests_safeop_process_cycle_before_op(runtime):
         call(hmi.pysoem.SAFEOP_STATE, 200_000),
         call(hmi.pysoem.OP_STATE, 500_000),
     ]
-    runtime.master.send_processdata.assert_called_once_with()
-    runtime.master.receive_processdata.assert_called_once_with(10_000)
+    # io_cycle is called once at SAFE-OP and once after entering OP.
+    assert runtime.master.send_processdata.call_count == 2
+    assert runtime.master.receive_processdata.call_count == 2
     assert runtime.io_slave.output == b"\x00\x00"
 
 
@@ -709,7 +718,7 @@ def test_pure_io_loop_latches_wkc_loss(runtime):
     runtime.io_slave = MagicMock()
     runtime.configure = MagicMock()
     runtime.expected_wkc = 3
-    runtime.io_cycle = MagicMock(side_effect=[0, 3])
+    runtime.io_cycle = MagicMock(return_value=0)
     runtime.read_io_inputs = MagicMock()
     runtime.master.close = MagicMock()
 
@@ -718,8 +727,7 @@ def test_pure_io_loop_latches_wkc_loss(runtime):
     assert runtime.running is False
     assert runtime.io_output_mask == 0
     assert runtime.state == "ERROR"
-    assert runtime.message == "Process-data WKC mismatch: 0/3"
-    assert runtime.io_cycle.call_count == 2
+    assert "process-data exchange lost" in runtime.message
     runtime.master.close.assert_called_once_with()
 
 
@@ -751,6 +759,7 @@ def test_safe_output_failure_latches_diagnostic_error(runtime):
     runtime.state = "ENABLED"
     runtime.command = 100
     runtime.expected_wkc = 3
+    runtime._master_open = True
     runtime.cycle = MagicMock(side_effect=RuntimeError("transport down"))
 
     runtime.stop_motion()

@@ -308,6 +308,7 @@ REMOTE_IO_PROFILES = (
         16,
         16,
         revision=0x00000001,
+        allow_partial_wkc=True,
         tolerated_mapping_sdo_errors=((0x1C00, 0, 0x06020000),),
     ),
 )

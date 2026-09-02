@@ -148,7 +148,7 @@ WKC/Revision/逐项 PDO 映射、急停/STO/限位/安全门、域控安装和�
 
 ### 实点 Solidot EC4-1616A 远程 I/O
 
-- ESI 使用 `ESI/EC4-XML V1.2/EcatTerminal-EC4_V4.04_BOOL.xml`；同一工程内只能选择一个 EC4 XML 变体，不能混用 BOOL、UINT 和 USINT 文件
+- ESI 使用 `ESI/active/实点-Solidot/EcatTerminal-EC4_V4.04_BOOL.xml`；同一工程内只能选择一个 EC4 XML 变体，不能混用 BOOL、UINT 和 USINT 文件
 - Vendor/Product/Revision：`0x00884443/0x00000004/0x00000001`，设备名为 `EC4-1616A`
 - 固定 RxPDO `0x1600`、TxPDO `0x1A00`，16 个 BOOL 输出和 16 个 BOOL 输入，过程镜像为输出 2 字节、输入 2 字节
 - 设备没有 CoE `0x1C00` 对象；Runtime/probe 仅对该设备过滤现场确认的 `0x1C00:00`、abort code `0x06020000`，映射长度仍必须校验为 4 字节
@@ -164,7 +164,7 @@ WKC/Revision/逐项 PDO 映射、急停/STO/限位/安全门、域控安装和�
 
 ### 麦格米特 EtherCAT 焊机
 
-- ESI：`ESI/麦格米特/MegmeetESI260416.xml`；Vendor/Product `0xE000001B/0x00000036`
+- ESI：`ESI/active/麦格米特/MegmeetESI260416.xml`；Vendor/Product `0xE000001B/0x00000036`
 - 原始 RxPDO `0x1600` / TxPDO `0x1A00`，过程镜像为输出 37 字节、输入 37 字节；Runtime 保留完整镜像，只使用前 8 个命令字节和前 14 个状态字节
 - 工作模式值：`0` 直流一元化、`1` 脉冲一元化、`2` JOB、`3` 近控、`4` 分别模式
 - Rx 命令包括开始焊接、机器人准备、气体检测、点动送丝、反抽送丝、寻位使能、JOB、焊接电流/送丝速度和焊接电压/电压强度；Tx 状态包括起弧成功、焊接状态、电源故障、通信就绪、故障码、寻位成功和实际量
@@ -209,7 +209,7 @@ npm start
 - `src/dm3c_ecat/jog.py`：受限命令行 Jog 备用工具
 - `pyproject.toml`：标准 Python 包配置和命令入口
 - `requirements-pysoem.txt`：固定 `pysoem` 版本
-- `ESI/`：设备 ESI 文件
+- `ESI/`：设备 ESI 文件（`incoming/` 为汇入区，`active/` 为程序实际使用区，详见 `ESI/README.md`）
 - `DEVELOPMENT_STATE.md`：实机验证记录和安全门槛
 
 SOEM/`pysoem` 的许可和再发布要求以其发行包及官方许可文本为准。

@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="ISO-8859-1" standalone="no"?>
+<EtherCATInfo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="EtherCATInfo.xsd" Version="1.3">
+	<Vendor>
+		<Id>#x01</Id>
+		<Name>HAUTO Electronics Corporation</Name>
+	</Vendor>
+	<Descriptions>
+		<Groups>
+			<Group>
+				<Type>HAUTO_ECAT_Device</Type>
+				<Name LcId="1033">HAUTO_ECAT_Device</Name>
+			</Group>
+		</Groups>
+		<Devices>
+			<Device Physics="YY">
+				<Type ProductCode="#x00010200" RevisionNo="#x00000001">HAUTO_DIO_16</Type>
+				<Name LcId="1033">HAUTO DIO 16DI/16DO MAP-FIX</Name>
+				<GroupType>HAUTO_ECAT_Device</GroupType>
+				<Profile>
+					<Dictionary>
+						<DataTypes>
+							<DataType>
+								<Name>BOOL</Name>
+								<BitSize>1</BitSize>
+							</DataType>
+							<DataType>
+								<Name>USINT</Name>
+								<BitSize>8</BitSize>
+							</DataType>
+							<DataType>
+								<Name>UDINT</Name>
+								<BitSize>32</BitSize>
+							</DataType>
+							<DataType>
+								<Name>DT6000</Name>
+								<BitSize>24</BitSize>
+								<SubItem><SubIdx>0</SubIdx><Name>SubIndex 000</Name><Type>USINT</Type><BitSize>8</BitSize><BitOffs>0</BitOffs><Flags><Access>ro</Access></Flags></SubItem>
+								<SubItem><SubIdx>1</SubIdx><Name>Digital Input Ch#0</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>8</BitOffs><Flags><Access>ro</Access><PdoMapping>t</PdoMapping></Flags></SubItem>
+								<SubItem><SubIdx>2</SubIdx><Name>Digital Input Ch#1</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>9</BitOffs><Flags><Access>ro</Access><PdoMapping>t</PdoMapping></Flags></SubItem>
+								<SubItem><SubIdx>3</SubIdx><Name>Digital Input Ch#2</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>10</BitOffs><Flags><Access>ro</Access><PdoMapping>t</PdoMapping></Flags></SubItem>
+								<SubItem><SubIdx>4</SubIdx><Name>Digital Input Ch#3</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>11</BitOffs><Flags><Access>ro</Access><PdoMapping>t</PdoMapping></Flags></SubItem>
+								<SubItem><SubIdx>5</SubIdx><Name>Digital Input Ch#4</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>12</BitOffs><Flags><Access>ro</Access><PdoMapping>t</PdoMapping></Flags></SubItem>
+								<SubItem><SubIdx>6</SubIdx><Name>Digital Input Ch#5</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>13</BitOffs><Flags><Access>ro</Access><PdoMapping>t</PdoMapping></Flags></SubItem>
+								<SubItem><SubIdx>7</SubIdx><Name>Digital Input Ch#6</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>14</BitOffs><Flags><Access>ro</Access><PdoMapping>t</PdoMapping></Flags></SubItem>
+								<SubItem><SubIdx>8</SubIdx><Name>Digital Input Ch#7</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>15</BitOffs><Flags><Access>ro</Access><PdoMapping>t</PdoMapping></Flags></SubItem>
+								<SubItem><SubIdx>9</SubIdx><Name>Digital Input Ch#8</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>16</BitOffs><Flags><Access>ro</Access><PdoMapping>t</PdoMapping></Flags></SubItem>
+								<SubItem><SubIdx>10</SubIdx><Name>Digital Input Ch#9</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>17</BitOffs><Flags><Access>ro</Access><PdoMapping>t</PdoMapping></Flags></SubItem>
+								<SubItem><SubIdx>11</SubIdx><Name>Digital Input Ch#A</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>18</BitOffs><Flags><Access>ro</Access><PdoMapping>t</PdoMapping></Flags></SubItem>
+								<SubItem><SubIdx>12</SubIdx><Name>Digital Input Ch#B</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>19</BitOffs><Flags><Access>ro</Access><PdoMapping>t</PdoMapping></Flags></SubItem>
+								<SubItem><SubIdx>13</SubIdx><Name>Digital Input Ch#C</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>20</BitOffs><Flags><Access>ro</Access><PdoMapping>t</PdoMapping></Flags></SubItem>
+								<SubItem><SubIdx>14</SubIdx><Name>Digital Input Ch#D</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>21</BitOffs><Flags><Access>ro</Access><PdoMapping>t</PdoMapping></Flags></SubItem>
+								<SubItem><SubIdx>15</SubIdx><Name>Digital Input Ch#E</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>22</BitOffs><Flags><Access>ro</Access><PdoMapping>t</PdoMapping></Flags></SubItem>
+								<SubItem><SubIdx>16</SubIdx><Name>Digital Input Ch#F</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>23</BitOffs><Flags><Access>ro</Access><PdoMapping>t</PdoMapping></Flags></SubItem>
+							</DataType>
+							<DataType>
+								<Name>DT7000</Name>
+								<BitSize>24</BitSize>
+								<SubItem><SubIdx>0</SubIdx><Name>SubIndex 000</Name><Type>USINT</Type><BitSize>8</BitSize><BitOffs>0</BitOffs><Flags><Access>ro</Access></Flags></SubItem>
+								<SubItem><SubIdx>1</SubIdx><Name>Digital Output Ch#0</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>8</BitOffs><Flags><Access>rw</Access><PdoMapping>r</PdoMapping></Flags></SubItem>
+								<SubItem><SubIdx>2</SubIdx><Name>Digital Output Ch#1</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>9</BitOffs><Flags><Access>rw</Access><PdoMapping>r</PdoMapping></Flags></SubItem>
+								<SubItem><SubIdx>3</SubIdx><Name>Digital Output Ch#2</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>10</BitOffs><Flags><Access>rw</Access><PdoMapping>r</PdoMapping></Flags></SubItem>
+								<SubItem><SubIdx>4</SubIdx><Name>Digital Output Ch#3</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>11</BitOffs><Flags><Access>rw</Access><PdoMapping>r</PdoMapping></Flags></SubItem>
+								<SubItem><SubIdx>5</SubIdx><Name>Digital Output Ch#4</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>12</BitOffs><Flags><Access>rw</Access><PdoMapping>r</PdoMapping></Flags></SubItem>
+								<SubItem><SubIdx>6</SubIdx><Name>Digital Output Ch#5</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>13</BitOffs><Flags><Access>rw</Access><PdoMapping>r</PdoMapping></Flags></SubItem>
+								<SubItem><SubIdx>7</SubIdx><Name>Digital Output Ch#6</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>14</BitOffs><Flags><Access>rw</Access><PdoMapping>r</PdoMapping></Flags></SubItem>
+								<SubItem><SubIdx>8</SubIdx><Name>Digital Output Ch#7</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>15</BitOffs><Flags><Access>rw</Access><PdoMapping>r</PdoMapping></Flags></SubItem>
+								<SubItem><SubIdx>9</SubIdx><Name>Digital Output Ch#8</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>16</BitOffs><Flags><Access>rw</Access><PdoMapping>r</PdoMapping></Flags></SubItem>
+								<SubItem><SubIdx>10</SubIdx><Name>Digital Output Ch#9</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>17</BitOffs><Flags><Access>rw</Access><PdoMapping>r</PdoMapping></Flags></SubItem>
+								<SubItem><SubIdx>11</SubIdx><Name>Digital Output Ch#A</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>18</BitOffs><Flags><Access>rw</Access><PdoMapping>r</PdoMapping></Flags></SubItem>
+								<SubItem><SubIdx>12</SubIdx><Name>Digital Output Ch#B</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>19</BitOffs><Flags><Access>rw</Access><PdoMapping>r</PdoMapping></Flags></SubItem>
+								<SubItem><SubIdx>13</SubIdx><Name>Digital Output Ch#C</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>20</BitOffs><Flags><Access>rw</Access><PdoMapping>r</PdoMapping></Flags></SubItem>
+								<SubItem><SubIdx>14</SubIdx><Name>Digital Output Ch#D</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>21</BitOffs><Flags><Access>rw</Access><PdoMapping>r</PdoMapping></Flags></SubItem>
+								<SubItem><SubIdx>15</SubIdx><Name>Digital Output Ch#E</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>22</BitOffs><Flags><Access>rw</Access><PdoMapping>r</PdoMapping></Flags></SubItem>
+								<SubItem><SubIdx>16</SubIdx><Name>Digital Output Ch#F</Name><Type>BOOL</Type><BitSize>1</BitSize><BitOffs>23</BitOffs><Flags><Access>rw</Access><PdoMapping>r</PdoMapping></Flags></SubItem>
+							</DataType>
+						</DataTypes>
+						<Objects>
+							<Object><Index>#x6000</Index><Name>DI Inputs</Name><Type>DT6000</Type><BitSize>24</BitSize><Flags><Access>ro</Access></Flags></Object>
+							<Object><Index>#x7000</Index><Name>DO Outputs</Name><Type>DT7000</Type><BitSize>24</BitSize><Flags><Access>rw</Access></Flags></Object>
+							<Object>
+								<Index>#x1600</Index>
+								<Name>DO RxPDO-Map</Name>
+								<Type>UDINT</Type>
+								<BitSize>32</BitSize>
+								<Info><DefaultData>010100700102007001030070010400700105007001060070010700700108007001090070010A0070010B0070010C0070010D0070010E0070010F007001100070</DefaultData></Info>
+								<Flags><Access>ro</Access></Flags>
+						</Object>
+							<Object>
+								<Index>#x1A00</Index>
+								<Name>DI TxPDO-Map</Name>
+								<Type>UDINT</Type>
+								<BitSize>32</BitSize>
+								<Info><DefaultData>010100600102006001030060010400600105006001060060010700600108006001090060010A0060010B0060010C0060010D0060010E0060010F006001100060</DefaultData></Info>
+								<Flags><Access>ro</Access></Flags>
+							</Object>
+						</Objects>
+					</Dictionary>
+				</Profile>
+				<Fmmu>Outputs</Fmmu>
+				<Fmmu>Inputs</Fmmu>
+				<Sm StartAddress="#x0f02" ControlByte="#x44" Enable="1" OpOnly="1">Outputs</Sm>
+				<Sm StartAddress="#x0f03" ControlByte="#x44" Enable="1" OpOnly="1">Outputs</Sm>
+				<Sm StartAddress="#x1000" ControlByte="0" Enable="1">Inputs</Sm>
+				<RxPdo Fixed="true" Mandatory="true" Sm="0">
+					<Index>#x1600</Index>
+					<Name>DO</Name>
+					<Entry><Index>#x7000</Index><SubIndex>1</SubIndex><BitLen>1</BitLen><Name>Digital Output Ch#0</Name><DataType>BOOL</DataType></Entry>
+					<Entry><Index>#x7000</Index><SubIndex>2</SubIndex><BitLen>1</BitLen><Name>Digital Output Ch#1</Name><DataType>BOOL</DataType></Entry>
+					<Entry><Index>#x7000</Index><SubIndex>3</SubIndex><BitLen>1</BitLen><Name>Digital Output Ch#2</Name><DataType>BOOL</DataType></Entry>
+					<Entry><Index>#x7000</Index><SubIndex>4</SubIndex><BitLen>1</BitLen><Name>Digital Output Ch#3</Name><DataType>BOOL</DataType></Entry>
+					<Entry><Index>#x7000</Index><SubIndex>5</SubIndex><BitLen>1</BitLen><Name>Digital Output Ch#4</Name><DataType>BOOL</DataType></Entry>
+					<Entry><Index>#x7000</Index><SubIndex>6</SubIndex><BitLen>1</BitLen><Name>Digital Output Ch#5</Name><DataType>BOOL</DataType></Entry>
+					<Entry><Index>#x7000</Index><SubIndex>7</SubIndex><BitLen>1</BitLen><Name>Digital Output Ch#6</Name><DataType>BOOL</DataType></Entry>
+					<Entry><Index>#x7000</Index><SubIndex>8</SubIndex><BitLen>1</BitLen><Name>Digital Output Ch#7</Name><DataType>BOOL</DataType></Entry>
+					<Entry><Index>#x7000</Index><SubIndex>9</SubIndex><BitLen>1</BitLen><Name>Digital Output Ch#8</Name><DataType>BOOL</DataType></Entry>
+					<Entry><Index>#x7000</Index><SubIndex>10</SubIndex><BitLen>1</BitLen><Name>Digital Output Ch#9</Name><DataType>BOOL</DataType></Entry>
+					<Entry><Index>#x7000</Index><SubIndex>11</SubIndex><BitLen>1</BitLen><Name>Digital Output Ch#A</Name><DataType>BOOL</DataType></Entry>
+					<Entry><Index>#x7000</Index><SubIndex>12</SubIndex><BitLen>1</BitLen><Name>Digital Output Ch#B</Name><DataType>BOOL</DataType></Entry>
+					<Entry><Index>#x7000</Index><SubIndex>13</SubIndex><BitLen>1</BitLen><Name>Digital Output Ch#C</Name><DataType>BOOL</DataType></Entry>
+					<Entry><Index>#x7000</Index><SubIndex>14</SubIndex><BitLen>1</BitLen><Name>Digital Output Ch#D</Name><DataType>BOOL</DataType></Entry>
+					<Entry><Index>#x7000</Index><SubIndex>15</SubIndex><BitLen>1</BitLen><Name>Digital Output Ch#E</Name><DataType>BOOL</DataType></Entry>
+					<Entry><Index>#x7000</Index><SubIndex>16</SubIndex><BitLen>1</BitLen><Name>Digital Output Ch#F</Name><DataType>BOOL</DataType></Entry>
+				</RxPdo>
+				<TxPdo Fixed="true" Mandatory="true" Sm="2">
+					<Index>#x1A00</Index>
+					<Name>DI</Name>
+					<Entry><Index>#x6000</Index><SubIndex>1</SubIndex><BitLen>1</BitLen><Name>Digital Input Ch#0</Name><DataType>BOOL</DataType></Entry>
+					<Entry><Index>#x6000</Index><SubIndex>2</SubIndex><BitLen>1</BitLen><Name>Digital Input Ch#1</Name><DataType>BOOL</DataType></Entry>
+					<Entry><Index>#x6000</Index><SubIndex>3</SubIndex><BitLen>1</BitLen><Name>Digital Input Ch#2</Name><DataType>BOOL</DataType></Entry>
+					<Entry><Index>#x6000</Index><SubIndex>4</SubIndex><BitLen>1</BitLen><Name>Digital Input Ch#3</Name><DataType>BOOL</DataType></Entry>
+					<Entry><Index>#x6000</Index><SubIndex>5</SubIndex><BitLen>1</BitLen><Name>Digital Input Ch#4</Name><DataType>BOOL</DataType></Entry>
+					<Entry><Index>#x6000</Index><SubIndex>6</SubIndex><BitLen>1</BitLen><Name>Digital Input Ch#5</Name><DataType>BOOL</DataType></Entry>
+					<Entry><Index>#x6000</Index><SubIndex>7</SubIndex><BitLen>1</BitLen><Name>Digital Input Ch#6</Name><DataType>BOOL</DataType></Entry>
+					<Entry><Index>#x6000</Index><SubIndex>8</SubIndex><BitLen>1</BitLen><Name>Digital Input Ch#7</Name><DataType>BOOL</DataType></Entry>
+					<Entry><Index>#x6000</Index><SubIndex>9</SubIndex><BitLen>1</BitLen><Name>Digital Input Ch#8</Name><DataType>BOOL</DataType></Entry>
+					<Entry><Index>#x6000</Index><SubIndex>10</SubIndex><BitLen>1</BitLen><Name>Digital Input Ch#9</Name><DataType>BOOL</DataType></Entry>
+					<Entry><Index>#x6000</Index><SubIndex>11</SubIndex><BitLen>1</BitLen><Name>Digital Input Ch#A</Name><DataType>BOOL</DataType></Entry>
+					<Entry><Index>#x6000</Index><SubIndex>12</SubIndex><BitLen>1</BitLen><Name>Digital Input Ch#B</Name><DataType>BOOL</DataType></Entry>
+					<Entry><Index>#x6000</Index><SubIndex>13</SubIndex><BitLen>1</BitLen><Name>Digital Input Ch#C</Name><DataType>BOOL</DataType></Entry>
+					<Entry><Index>#x6000</Index><SubIndex>14</SubIndex><BitLen>1</BitLen><Name>Digital Input Ch#D</Name><DataType>BOOL</DataType></Entry>
+					<Entry><Index>#x6000</Index><SubIndex>15</SubIndex><BitLen>1</BitLen><Name>Digital Input Ch#E</Name><DataType>BOOL</DataType></Entry>
+					<Entry><Index>#x6000</Index><SubIndex>16</SubIndex><BitLen>1</BitLen><Name>Digital Input Ch#F</Name><DataType>BOOL</DataType></Entry>
+				</TxPdo>
+				<Dc>
+					<OpMode>
+						<Name>DcOff</Name>
+						<Desc>DC unused</Desc>
+						<AssignActivate>#x0000</AssignActivate>
+					</OpMode>
+					<OpMode>
+						<Name>DcSync</Name>
+						<Desc>DC for synchronization</Desc>
+						<AssignActivate>#x0100</AssignActivate>
+						<CycleTimeSync0 Factor="1">0</CycleTimeSync0>
+						<ShiftTimeSync0>0</ShiftTimeSync0>
+					</OpMode>
+				</Dc>
+				<Eeprom>
+					<ByteSize>2048</ByteSize>
+					<ConfigData>040f0044102700ff000000000000</ConfigData>
+				</Eeprom>
+			</Device>
+		</Devices>
+	</Descriptions>
+</EtherCATInfo>

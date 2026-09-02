@@ -198,6 +198,7 @@ class Runtime:
         self.mode = 0
         self.wkc = 0
         self.expected_wkc = 0
+        self._master_open = False
         self.enabled = False
         self.enable_requested = False
         self.acceleration_time = DEFAULT_RAMP_TIME
@@ -306,6 +307,7 @@ class Runtime:
             raise RuntimeError("previous EtherCAT runtime is still stopping")
         with self.lock:
             self.master = pysoem.Master()
+            self._master_open = False
             self.interface = selected
             self.slave = None
             self.drive_slave = None
@@ -514,6 +516,8 @@ class Runtime:
             self.io_output_mask = 0
             self._clear_welding_command_locked()
 
+        if not self._master_open:
+            return
         try:
             if self.profile is not None and self._drive_device() is not None:
                 self.wkc = self.cycle(0x0006, 0)
@@ -800,6 +804,9 @@ class Runtime:
                 self.message = "Welding command cleared"
 
     def _transmit_safe_outputs(self, *, disable_drive: bool) -> None:
+        if not self._master_open:
+            LOGGER.debug("Skipping safe outputs: EtherCAT interface is not open")
+            return
         try:
             validate_wkc = False
             pure_io = False
@@ -1356,16 +1363,20 @@ class Runtime:
             self.wkc = self.io_cycle()
             self.read_io_inputs()
             if not self._process_wkc_is_valid(pure_io=True):
-                message = (
-                    f"Process-data WKC mismatch: {self.wkc}/{self.expected_wkc}"
-                )
-                self._latch_runtime_error(message)
-                LOGGER.error(
-                    "Digital I/O WKC mismatch: actual=%s expected=%s",
-                    self.wkc,
-                    self.expected_wkc,
-                )
-                return
+                if self.wkc <= 0:
+                    message = (
+                        f"Digital I/O process-data exchange lost: WKC={self.wkc}"
+                    )
+                    self._latch_runtime_error(message)
+                    LOGGER.error(message)
+                    return
+                with self.lock:
+                    if self.state != "ERROR":
+                        self.state = "OPERATIONAL"
+                        self.message = (
+                            f"Digital I/O running; partial WKC "
+                            f"{self.wkc}/{self.expected_wkc}"
+                        )
             else:
                 with self.lock:
                     if self.state != "ERROR":
@@ -1867,7 +1878,12 @@ class Runtime:
         self.master.write_state()
         if self.master.state_check(pysoem.OP_STATE, 500_000) != pysoem.OP_STATE:
             raise RuntimeError("digital I/O device did not reach OP")
-        LOGGER.info("EtherCAT digital I/O reached OP state")
+        self.wkc = self.io_cycle()
+        LOGGER.info(
+            "EtherCAT digital I/O reached OP state (WKC=%d/%d)",
+            self.wkc,
+            self.expected_wkc,
+        )
 
     def _identify_slaves(self) -> None:
         self.slave = None
@@ -1923,6 +1939,7 @@ class Runtime:
                 "no EtherCAT slave detected on the selected interface"
             )
         self._identify_slaves()
+        self.master.config_dc()
         if self.profile is not None:
             if self.io_profile is not None:
                 self._prepare_io_modules()
@@ -1986,6 +2003,7 @@ class Runtime:
     def loop(self) -> None:
         try:
             self.master.open(self.interface)
+            self._master_open = True
             LOGGER.info("EtherCAT interface opened")
             self.configure()
             if self.profile is None and self.welding_profile is not None:
@@ -2243,4 +2261,6 @@ class Runtime:
                     self.running = False
                     self.state = "ERROR"
                     self.message = f"{self.message}; {detail}" if self.message else detail
+            finally:
+                self._master_open = False
             LOGGER.info("EtherCAT interface closed")

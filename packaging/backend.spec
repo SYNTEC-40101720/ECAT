@@ -4,7 +4,7 @@ from PyInstaller.utils.hooks import collect_submodules
 
 project_root = Path(SPEC).resolve().parent.parent
 src_root = project_root / "src"
-esi_root = project_root / "ESI"
+esi_root = project_root / "ESI" / "active"
 backend_name = "SYNTEC-ECAT-Test-Backend"
 
 analysis = Analysis(

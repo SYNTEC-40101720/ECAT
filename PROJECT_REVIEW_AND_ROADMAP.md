@@ -146,7 +146,7 @@ Electron 关闭时直接调用 `backend.kill()`，可能跳过 Python `finally` 
 
 - profile 当前只按 Vendor/Product 匹配，没有绑定 Revision/固件版本。
 - Runtime 主要验证过程镜像长度，没有逐项回读 PDO 对象、顺序和位宽。
-- 本地 `ESI/KF_EC2SS3V1.23.xml` 中 `0x1600` CSP 映射为 9 字节；项目状态文档记录
+- 本地 `ESI/active/凯福/KF_EC2SS3V1.23.xml` 中 `0x1600` CSP 映射为 9 字节；项目状态文档记录
   KaiFull 实机映射为 13 字节并包含 `0x60FF`。这可能是现场版本差异，不能直接判定
   哪一方错误，但必须按 revision/固件版本建 profile 并做映射 readback。
 

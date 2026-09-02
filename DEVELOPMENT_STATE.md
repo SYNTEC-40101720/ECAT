@@ -95,7 +95,7 @@
 
 ## 新增凯福驱动扫描结果
 
-- ESI：`ESI/KF_EC2SS3V1.23.xml`
+- ESI：`ESI/active/凯福/KF_EC2SS3V1.23.xml`
 - 实际设备名：`SSD60N`
 - Vendor/Product/Revision：`0x024B/0x0215/0x0001`
 - 默认映射：Rx 104 bit、Tx 184 bit；切换到速度映射 `0x1602/0x1A00` 后为 Rx 120 bit、Tx 184 bit
@@ -108,7 +108,7 @@
 
 ## HAUTO 远程 I/O
 
-- ESI：`ESI/HAUTO_AX58100_DIO_IO_MAP_FIX.xml`
+- ESI：`ESI/active/HAUTO/HAUTO_AX58100_DIO_IO_MAP_FIX.xml`
 - 实际设备名：`HAUTO_DIO_16`
 - Vendor/Product/Revision：`0x00000001/0x00010200/0x00000001`
 - 固定 RxPDO `0x1600`、TxPDO `0x1A00`，实际过程镜像为输出 2 字节、输入 2 字节
@@ -118,7 +118,7 @@
 
 ## 实点 Solidot EC4-1616A 远程 I/O（2026-09-01）
 
-- ESI：`ESI/EC4-XML V1.2/EcatTerminal-EC4_V4.04_BOOL.xml`；随附说明要求同一工程只能选择一个 EC4 XML 变体，不得同时使用 BOOL、UINT、USINT 文件
+- ESI：`ESI/active/实点-Solidot/EcatTerminal-EC4_V4.04_BOOL.xml`；随附说明要求同一工程只能选择一个 EC4 XML 变体，不得同时使用 BOOL、UINT、USINT 文件
 - 实际身份：设备名 `EC4-1616A`，Vendor/Product/Revision 为 `0x00884443/0x00000004/0x00000001`
 - 固定 PDO：RxPDO `0x1600`、TxPDO `0x1A00`；每个 PDO 包含 16 个 `BOOL`，过程镜像为 Rx 2 bytes/16 bits、Tx 2 bytes/16 bits
 - 设备不提供 CoE `0x1C00` SyncManager Communication Type 对象。pysoem `config_map()`/`config_overlap_map()` 会先记录 `0x1C00:00` 的 SDO abort `0x06020000`，随后已完成 SII 固定 PDO 映射；Runtime 和 `ecat-probe` 只在从站位置、索引、子索引和 abort code 全部精确匹配时忽略该错误，并继续校验实际缓冲区和总映射长度
@@ -127,7 +127,7 @@
 
 ## DECOWELL 模块化远程 I/O
 
-- ESI：`ESI/DECOWELL_EX-1100_V1.9.8.xml` 及 Digital_BOOL/UINT/USINT 变体
+- ESI：`ESI/active/DECOWELL/DECOWELL_EX-1100_V1.9.8.xml`（Digital_BOOL/UINT/USINT 变体仅在 `ESI/incoming/` 备查）
 - 实际设备：DECOWELL EX-1100；Vendor/Product/Revision：`0x00444543/0x00000001/0x00010001`
 - 现场模块组合：EX-203S 32DI，模块 ID `0x7C`；EX-313S 32DO，模块 ID `0x7F`，两种模块各安装两组
 - 固定 RxPDO `0x1601`、TxPDO `0x1A00`；实际过程镜像为 Rx 8 bytes/64 bits、Tx 16 bytes/128 bits，Runtime 按检测到的模块组动态提供 64DI/64DO
@@ -139,7 +139,7 @@
 
 ## 麦格米特 EtherCAT 焊机
 
-- ESI：`ESI/麦格米特/MegmeetESI260416.xml`
+- ESI：`ESI/active/麦格米特/MegmeetESI260416.xml`
 - Vendor/Product：`0xE000001B/0x00000036`
 - 原始 RxPDO `0x1600`、TxPDO `0x1A00`；输出/输入过程镜像均为 37 bytes
 - `src/dm3c_ecat/welding.py` 集中维护 5 种工作模式、Rx 前 8 字节命令打包和 Tx 前 14 字节反馈解码；其余过程镜像字节保留为零或忽略

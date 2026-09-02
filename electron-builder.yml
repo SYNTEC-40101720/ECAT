@@ -10,7 +10,7 @@ asar: true
 extraResources:
   - from: build/backend-dist/SYNTEC-ECAT-Test-Backend
     to: backend
-  - from: ESI
+  - from: ESI/active
     to: esi
 win:
   target:
