@@ -1026,7 +1026,12 @@ class Runtime:
             return
         with self.lock:
             output_mask = self.io_output_mask
-        io_slave.output = output_mask.to_bytes(self.io_profile.rx_bytes, "little")
+        offset = self.io_profile.coupler_rx_bytes
+        payload = output_mask.to_bytes(self.io_profile.rx_bytes - offset, "little")
+        if offset:
+            io_slave.output = b"\x00" * offset + payload
+        else:
+            io_slave.output = payload
 
     def _write_welding_command(self) -> None:
         welding_slave = self._welding_device()
@@ -1098,10 +1103,13 @@ class Runtime:
         io_slave = self._io_device()
         if self.io_profile is None or io_slave is None:
             raise RuntimeError("digital I/O process data is not configured")
+        offset = self.io_profile.coupler_tx_bytes
+        payload_bytes = self.io_profile.tx_bytes - offset
         input_mask = int.from_bytes(
-            bytes(io_slave.input[: self.io_profile.tx_bytes]), "little"
+            bytes(io_slave.input[offset : self.io_profile.tx_bytes]), "little"
         )
-        input_mask &= (1 << self.io_profile.input_channels) - 1
+        if payload_bytes > 0:
+            input_mask &= (1 << self.io_profile.input_channels) - 1
         with self.lock:
             self.io_input_mask = input_mask
         return input_mask

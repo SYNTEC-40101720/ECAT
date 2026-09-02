@@ -138,6 +138,12 @@ class RemoteIoProfile:
     module_slot_stride: int = 0x10
     allow_partial_wkc: bool = False
     tolerated_mapping_sdo_errors: tuple[tuple[int, int, int], ...] = ()
+    # "sdo_slot" (private per-slot SDO, e.g. DECOWELL 0x8000) or
+    # "f030_array" (ETG.5001 standard 0xF030 Configured Module Ident List)
+    module_config_protocol: str = "sdo_slot"
+    # Extra PDO bytes consumed by the coupler itself (e.g. XB6 0x16FF/0x1AFF = 2 bytes each)
+    coupler_rx_bytes: int = 0
+    coupler_tx_bytes: int = 0
 
     @property
     def io_map_bytes(self) -> int:
@@ -311,6 +317,22 @@ REMOTE_IO_PROFILES = (
         allow_partial_wkc=True,
         tolerated_mapping_sdo_errors=((0x1C00, 0, 0x06020000),),
     ),
+    RemoteIoProfile(
+        "Solidot XB6-EC0002 Modular Coupler",
+        0x00884443,
+        0x000000B6,
+        0x16FF,
+        0x1AFF,
+        0,
+        0,
+        0,
+        0,
+        revision=0x00000001,
+        allow_partial_wkc=True,
+        module_config_protocol="f030_array",
+        coupler_rx_bytes=2,
+        coupler_tx_bytes=2,
+    ),
 )
 
 REMOTE_IO_PROFILES_BY_ID = {
@@ -365,19 +387,103 @@ def read_detected_module_ids(slave: object) -> tuple[int, ...]:
 def resolve_remote_io_profile(
     slave: object, profile: RemoteIoProfile
 ) -> RemoteIoProfile:
+    """Detect installed modules and return a profile adjusted to the actual combination."""
+    if profile.module_config_protocol == "f030_array":
+        return _resolve_xb6_modules(slave, profile)
     if not profile.module_init_commands:
         return profile
     return profile.for_detected_modules(read_detected_module_ids(slave))
+
+
+# XB6 module ID -> (di_channels, do_channels, rx_bytes, tx_bytes)
+_XB6_MODULE_TABLE: dict[int, tuple[int, int, int, int]] = {
+    0x00000627: (32, 0, 0, 4),   # XB6-3200B  32DI PNP
+    0x00000629: (16, 0, 0, 2),   # XB6-1600B  16DI PNP
+    0x00000631: (8,  0, 0, 1),   # XB6-0800B   8DI PNP
+    0x00000626: (32, 0, 0, 4),   # XB6-3200A  32DI NPN
+    0x000A626:  (32, 0, 0, 4),   # XB6-3200N  32DI NPN
+    0x00000628: (16, 0, 0, 2),   # XB6-1600A  16DI NPN
+    0x00000630: (8,  0, 0, 1),   # XB6-0800A   8DI NPN
+    0x00000623: (0, 32, 4, 0),   # XB6-0032B  32DO PNP
+    0x000B623:  (0, 32, 4, 0),   # XB6-0032BN 32DO NPN
+    0x00000625: (0, 16, 2, 0),   # XB6-0016B  16DO PNP
+    0x00000633: (0,  8, 1, 0),   # XB6-0008B   8DO PNP
+    0x00000622: (0, 32, 4, 0),   # XB6-0032A  32DO NPN
+    0x000A622:  (0, 32, 4, 0),   # XB6-0032AN 32DO NPN
+    0x00000624: (0, 16, 2, 0),   # XB6-0016A  16DO NPN
+    0x00000632: (0,  8, 1, 0),   # XB6-0008A   8DO NPN
+    0x00000700: (0, 16, 2, 0),   # XB6-VT16   16DO
+    0x00000612: (0, 12, 2, 0),   # XB6-0012J  12DO
+    0x00000620: (16, 16, 2, 2),  # XB6-1616A  16DI/16DO NPN
+    0x00000621: (16, 16, 2, 2),  # XB6-1616B  16DI/16DO PNP
+}
+
+
+def _resolve_xb6_modules(
+    slave: object, profile: RemoteIoProfile
+) -> RemoteIoProfile:
+    """Resolve XB6-EC0002 modular coupler using standard ETG.5001 0xF050 detection."""
+    module_ids = read_detected_module_ids(slave)
+    if not module_ids:
+        raise RuntimeError(
+            f"no XB6 I/O modules detected on {profile.name}; "
+            "insert at least one digital I/O module"
+        )
+    total_di = 0
+    total_do = 0
+    total_rx = 0
+    total_tx = 0
+    for mid in module_ids:
+        info = _XB6_MODULE_TABLE.get(mid)
+        if info is None:
+            known = ", ".join(f"0x{k:08X}" for k in _XB6_MODULE_TABLE)
+            raise RuntimeError(
+                f"unsupported XB6 module 0x{mid:08X}; "
+                f"supported modules: {known}"
+            )
+        di, do, rx, tx = info
+        total_di += di
+        total_do += do
+        total_rx += rx
+        total_tx += tx
+    return replace(
+        profile,
+        expected_module_ids=module_ids,
+        rx_bytes=total_rx + profile.coupler_rx_bytes,
+        tx_bytes=total_tx + profile.coupler_tx_bytes,
+        input_channels=total_di,
+        output_channels=total_do,
+        name=(
+            f"{profile.name} {total_di}DI/{total_do}DO"
+            if total_di or total_do
+            else profile.name
+        ),
+    )
 
 
 def initialize_remote_io_modules(
     slave: object, profile: RemoteIoProfile
 ) -> RemoteIoProfile:
     """Apply ESI-defined slot identifiers before mapping a modular I/O device."""
+    if profile.module_config_protocol == "f030_array":
+        return _initialize_xb6_modules(slave, profile)
     if not profile.module_init_commands:
         return profile
 
     resolved_profile = resolve_remote_io_profile(slave, profile)
     for index, subindex, value in resolved_profile.module_init_commands:
         slave.sdo_write(index, subindex, value)
+    return resolved_profile
+
+
+def _initialize_xb6_modules(
+    slave: object, profile: RemoteIoProfile
+) -> RemoteIoProfile:
+    """Write detected module IDs to 0xF030 Configured Module Ident List."""
+    resolved_profile = resolve_remote_io_profile(slave, profile)
+    module_ids = resolved_profile.expected_module_ids
+    count = len(module_ids)
+    slave.sdo_write(0xF030, 0, count.to_bytes(1, "little"))
+    for i, mid in enumerate(module_ids, start=1):
+        slave.sdo_write(0xF030, i, mid.to_bytes(4, "little"))
     return resolved_profile
