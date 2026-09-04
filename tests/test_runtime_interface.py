@@ -213,7 +213,14 @@ def test_mode_switch_sends_zero_frame_and_requires_strict_wkc(runtime):
 
     runtime.switch_mode(hmi.MODE_PP)
 
-    runtime.cycle.assert_called_once_with(0x0006, 0)
+    assert [item.args for item in runtime.cycle.call_args_list] == [
+        (0x0006, 0),
+        (0x0080, 0),
+        (0x0080, 0),
+        (0x0006, 0),
+        (0x0006, 0),
+        (0x0006, 0),
+    ]
     assert bytes(runtime.io_slave.output) == b"\x00\x00"
 
 
@@ -242,6 +249,13 @@ def test_pp_ramp_times_are_converted_to_profile_values(runtime):
 
     assert runtime.pp_acceleration == 4000
     assert runtime.pp_deceleration == 2000
+
+
+def test_zero_velocity_ramp_uses_dm3c_safe_profile_values(runtime):
+    assert runtime.ramp_values(0) == (
+        hmi.DEFAULT_PROFILE_ACCELERATION,
+        hmi.DEFAULT_PROFILE_ACCELERATION,
+    )
 
 
 def test_csp_and_homing_packets_match_profile_shapes():
@@ -326,6 +340,42 @@ def test_drive_pdo_assignment_readback_rejects_mismatch(runtime):
 
     with pytest.raises(RuntimeError, match="0x1C12:01 mismatch"):
         runtime._validate_drive_pdo_assignments(0x1602)
+
+
+def test_dm3c_accepts_observed_txpdo_layout_and_decodes_feedback(runtime):
+    drive = MagicMock()
+    drive.output = bytearray(15)
+    drive.input = bytearray(12)
+    mapping = {
+        (0x1C12, 0): b"\x01",
+        (0x1C12, 1): b"\x02\x16",
+        (0x1C13, 0): b"\x01",
+        (0x1C13, 1): b"\x00\x1A",
+        (0x1A00, 0): b"\x04",
+        (0x1A00, 1): b"\x20\x00\x64\x60",
+        (0x1A00, 2): b"\x10\x00\x41\x60",
+        (0x1A00, 3): b"\x10\x00\xB9\x60",
+        (0x1A00, 4): b"\x20\x00\xBA\x60",
+    }
+    drive.sdo_read.side_effect = lambda index, subindex: mapping[
+        (index, subindex)
+    ]
+    runtime.profile = DRIVE_PROFILES[0]
+    runtime.drive_slave = drive
+    runtime.master.config_overlap_map.return_value = 27
+    runtime.master.expected_wkc = 3
+
+    runtime.configure_process_data(hmi.MODE_PV)
+
+    drive.input[0:4] = (1234).to_bytes(4, "little", signed=True)
+    drive.input[4:6] = (0x0027).to_bytes(2, "little")
+    runtime.feedback()
+
+    assert runtime.drive_tx_bytes == 12
+    assert runtime.statusword == 0x0027
+    assert runtime.actual_position == 1234
+    assert runtime.error == 0
+    assert runtime.mode == 3
 
 
 def test_homing_and_csp_commands_queue_motion(runtime):
@@ -655,6 +705,7 @@ def test_runtime_keeps_drive_and_remote_io_on_the_same_bus(runtime):
         hmi.pysoem.SAFEOP_STATE,
         hmi.pysoem.OP_STATE,
     ]
+    runtime.master.receive_processdata.return_value = 4
 
     runtime.configure()
     runtime.state = "ENABLED"

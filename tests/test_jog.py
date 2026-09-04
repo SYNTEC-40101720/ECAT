@@ -49,6 +49,13 @@ def test_statusword_is_read_from_input_process_image():
     assert statusword_from_overlap_output(slave) == 0x0021
 
 
+def test_statusword_supports_observed_dm3c_txpdo_offset():
+    slave = FakeJogSlave()
+    slave.input[4:6] = (0x0021).to_bytes(2, "little")
+
+    assert statusword_from_input(slave, 4) == 0x0021
+
+
 def test_wait_status_uses_overlap_process_data_and_checks_wkc():
     slave = FakeJogSlave()
     slave.input[2:4] = (0x0021).to_bytes(2, "little")

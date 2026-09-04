@@ -129,7 +129,8 @@ WKC/Revision/逐项 PDO 映射、急停/STO/限位/安全门、域控安装和�
 
 ## 当前设备资料（摘要）
 
-- Leadshine DM3C-EC556：Vendor/Product `0x4321/0x8600`，Rx/Tx `15/19` bytes
+- Leadshine DM3C-EC556：Vendor/Product `0x4321/0x8600`，当前实机 Rx/Tx `15/12` bytes；
+	ESI 文件的完整 TxPDO 变体为 19 bytes，Runtime 会按从站实际映射选择已确认布局
 - KaiFull EC2SS3 / SSD60N：Vendor/Product `0x024B/0x0215`，Rx/Tx `15/23` bytes
 - 两种驱动都使用 RxPDO `0x1C12 = 0x1602`、TxPDO `0x1C13 = 0x1A00`
 - CiA 402 mode: Profile Velocity，`0x6060 = 0x03`

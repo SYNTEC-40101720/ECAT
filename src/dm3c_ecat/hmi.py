@@ -15,6 +15,8 @@ from .device_profiles import (
     get_welding_profile,
     initialize_remote_io_modules,
     is_tolerated_mapping_error,
+    pdo_layout_bytes,
+    read_pdo_mapping,
     resolve_default_interface,
 )
 from .logging_setup import DEFAULT_LOG_FILE, configure_logging
@@ -45,6 +47,7 @@ DEFAULT_RAMP_TIME = 0.5
 MIN_RAMP_TIME = 0.01
 MAX_RAMP_TIME = 60.0
 MAX_ACCELERATION = 10_000_000
+DEFAULT_PROFILE_ACCELERATION = 1000
 CSP_MAX_VELOCITY = 10_000
 CSP_MAX_ACCELERATION = 100_000
 CSP_MAX_FOLLOWING_ERROR = 1_000
@@ -63,6 +66,7 @@ CIA402_ENABLE_STEPS = (
     (0x0007, 0x0023, "Switched on"),
     (0x000F, 0x0027, "Operation enabled"),
 )
+CIA402_FAULT_RESET_SEQUENCE = (0x0080, 0x0080, 0x0006, 0x0006, 0x0006)
 CIA402_STATE_RETRIES = 100
 MIN_POSITION = -(1 << 31)
 MAX_POSITION = (1 << 31) - 1
@@ -196,6 +200,8 @@ class Runtime:
         self.statusword = 0
         self.error = 0
         self.mode = 0
+        self.drive_feedback_mapping = ()
+        self.drive_tx_bytes: int | None = None
         self.wkc = 0
         self.expected_wkc = 0
         self._master_open = False
@@ -335,6 +341,8 @@ class Runtime:
             self.statusword = 0
             self.error = 0
             self.mode = 0
+            self.drive_feedback_mapping = ()
+            self.drive_tx_bytes = None
             self.wkc = 0
             self.expected_wkc = 0
             self.enabled = False
@@ -400,7 +408,13 @@ class Runtime:
 
     @staticmethod
     def _ramp_value(magnitude: int, duration: float) -> int:
-        return min(MAX_ACCELERATION, max(1, round(max(1, abs(magnitude)) / duration)))
+        return min(
+            MAX_ACCELERATION,
+            max(
+                DEFAULT_PROFILE_ACCELERATION,
+                round(max(1, abs(magnitude)) / duration),
+            ),
+        )
 
     def ramp_values(
         self,
@@ -821,7 +835,11 @@ class Runtime:
                 self.wkc = self.io_cycle()
                 validate_wkc = True
                 pure_io = True
-            if validate_wkc and not self._process_wkc_is_valid(pure_io=pure_io):
+            if (
+                validate_wkc
+                and self.expected_wkc > 0
+                and not self._process_wkc_is_valid(pure_io=pure_io)
+            ):
                 raise RuntimeError(
                     f"safe process-data WKC mismatch: {self.wkc}/{self.expected_wkc}"
                 )
@@ -1013,7 +1031,12 @@ class Runtime:
                 selected_rx_bytes = (
                     mode_pdo.rx_bytes if mode_pdo is not None else self.profile.rx_bytes
                 )
-            total += selected_rx_bytes + self.profile.tx_bytes
+            selected_tx_bytes = (
+                self.drive_tx_bytes
+                if self.drive_tx_bytes is not None
+                else self.profile.tx_bytes
+            )
+            total += selected_rx_bytes + selected_tx_bytes
         if self.io_profile is not None:
             total += self.io_profile.io_map_bytes
         if self.welding_profile is not None:
@@ -1329,6 +1352,29 @@ class Runtime:
             raise RuntimeError("drive process data is not configured")
         self._read_pdo_assignment(drive_slave, 0x1C12, rx_pdo)
         self._read_pdo_assignment(drive_slave, 0x1C13, self.profile.tx_pdo)
+
+    def _resolve_drive_feedback_mapping(self) -> None:
+        if self.profile is None:
+            raise RuntimeError("drive profile is not available")
+        self.drive_feedback_mapping = ()
+        self.drive_tx_bytes = self.profile.tx_bytes
+        if not self.profile.feedback_pdo_layouts:
+            return
+        drive_slave = self._drive_device()
+        if drive_slave is None:
+            raise RuntimeError("drive process data is not configured")
+        mapping = read_pdo_mapping(drive_slave, self.profile.tx_pdo)
+        if mapping not in self.profile.feedback_pdo_layouts:
+            formatted = ", ".join(
+                f"0x{index:04X}:{subindex}={bit_length}bit"
+                for index, subindex, bit_length in mapping
+            )
+            raise RuntimeError(
+                f"{self.profile.name} unsupported TxPDO 0x{self.profile.tx_pdo:04X} "
+                f"mapping: {formatted}"
+            )
+        self.drive_feedback_mapping = mapping
+        self.drive_tx_bytes = pdo_layout_bytes(mapping)
 
     def _process_wkc_is_valid(self, *, pure_io: bool = False) -> bool:
         if (
@@ -1723,12 +1769,59 @@ class Runtime:
         if drive_slave is None:
             return
         data = bytes(drive_slave.input)
+        if self.drive_feedback_mapping:
+            error = self._mapped_feedback_value(
+                data, self.drive_feedback_mapping, 0x603F, 0, signed=False
+            )
+            statusword = self._mapped_feedback_value(
+                data, self.drive_feedback_mapping, 0x6041, 0, signed=False
+            )
+            mode = self._mapped_feedback_value(
+                data, self.drive_feedback_mapping, 0x6061, 0, signed=True
+            )
+            actual_position = self._mapped_feedback_value(
+                data, self.drive_feedback_mapping, 0x6064, 0, signed=True
+            )
+            self.error = error if error is not None else 0
+            self.statusword = statusword if statusword is not None else 0
+            self.mode = (
+                mode
+                if mode is not None
+                else MODE_VALUES.get(self.motion_mode, 0)
+            )
+            if actual_position is not None:
+                self.actual_position = actual_position
+            return
         if len(data) >= 5:
             self.error = int.from_bytes(data[0:2], "little")
             self.statusword = int.from_bytes(data[2:4], "little")
             self.mode = struct.unpack_from("<b", data, 4)[0]
         if len(data) >= 9:
             self.actual_position = struct.unpack_from("<i", data, 5)[0]
+
+    @staticmethod
+    def _mapped_feedback_value(
+        data: bytes,
+        mapping: tuple[tuple[int, int, int], ...],
+        index: int,
+        subindex: int,
+        *,
+        signed: bool,
+    ) -> int | None:
+        offset_bits = 0
+        for mapped_index, mapped_subindex, bit_length in mapping:
+            if mapped_index == index and mapped_subindex == subindex:
+                if offset_bits % 8 or bit_length % 8:
+                    return None
+                start = offset_bits // 8
+                size = bit_length // 8
+                if start + size > len(data):
+                    return None
+                return int.from_bytes(
+                    data[start : start + size], "little", signed=signed
+                )
+            offset_bits += bit_length
+        return None
 
     def enable_drive(self) -> None:
         LOGGER.info("CiA 402 enable sequence started")
@@ -1827,8 +1920,15 @@ class Runtime:
         self._validate_drive_pdo_assignments(rx_pdo)
         self.motion_mode = mode
         io_map_size = self._map_process_data(overlap=True)
+        self.expected_wkc = self.master.expected_wkc
+        self._resolve_drive_feedback_mapping()
         actual_sizes = (len(drive_slave.output), len(drive_slave.input))
-        expected_sizes = (rx_bytes, self.profile.tx_bytes)
+        expected_sizes = (
+            rx_bytes,
+            self.drive_tx_bytes
+            if self.drive_tx_bytes is not None
+            else self.profile.tx_bytes,
+        )
         if actual_sizes != expected_sizes:
             raise RuntimeError(
                 f"{self.profile.name} {mode.upper()} expected Rx/Tx bytes "
@@ -1841,7 +1941,6 @@ class Runtime:
                 f"unexpected {mode.upper()} process image size: {io_map_size} "
                 f"(expected {expected_map_size})"
             )
-        self.expected_wkc = self.master.expected_wkc
         self.pp_halted = mode == MODE_PP
         self.homing_pending = False
         self.homing_active = False
@@ -1871,6 +1970,14 @@ class Runtime:
         self.master.write_state()
         if self.master.state_check(pysoem.OP_STATE, 500_000) != pysoem.OP_STATE:
             raise RuntimeError("drive did not reach OP")
+        for controlword in CIA402_FAULT_RESET_SEQUENCE:
+            self.wkc = self.cycle(controlword, 0)
+            self.feedback()
+            if self.wkc != self.expected_wkc:
+                raise RuntimeError(
+                    f"fault reset process-data WKC mismatch: "
+                    f"{self.wkc}/{self.expected_wkc}"
+                )
         LOGGER.info("EtherCAT reached OP state")
 
     def request_io_operational(self) -> None:
@@ -1904,6 +2011,8 @@ class Runtime:
         self.profile = None
         self.io_profile = None
         self.welding_profile = None
+        self.drive_feedback_mapping = ()
+        self.drive_tx_bytes = None
         unsupported: list[str] = []
         for candidate in self.master.slaves:
             revision = getattr(candidate, "rev", None)

@@ -12,6 +12,8 @@ from .motion_modes import MODE_CSP, MODE_HM, MODE_PP, MODE_PV, ModePdo
 
 LOGGER = logging.getLogger("ecat_test.profiles")
 
+PdoLayout = tuple[tuple[int, int, int], ...]
+
 _VIRTUAL_ADAPTER_MARKERS = (
     "wan miniport",
     "wi-fi",
@@ -91,6 +93,7 @@ class DriveProfile:
     pp_rx_bytes: int = 19
     pp_mode: int = 1
     mode_pdos: tuple[ModePdo, ...] = ()
+    feedback_pdo_layouts: tuple[PdoLayout, ...] = ()
 
     @property
     def io_map_bytes(self) -> int:
@@ -221,13 +224,30 @@ DRIVE_PROFILES = (
         0x1602,
         0x1A00,
         15,
-        19,
+        12,
         revision=0x0001,
         mode_pdos=(
             ModePdo(MODE_PV, 0x1602, 15, "velocity"),
             ModePdo(MODE_PP, 0x1601, 19, "profile_position"),
             ModePdo(MODE_HM, 0x1603, 20, "homing"),
             ModePdo(MODE_CSP, 0x1600, 8, "csp", mode_in_pdo=False),
+        ),
+        feedback_pdo_layouts=(
+            (
+                (0x6064, 0, 32),
+                (0x6041, 0, 16),
+                (0x60B9, 0, 16),
+                (0x60BA, 0, 32),
+            ),
+            (
+                (0x603F, 0, 16),
+                (0x6041, 0, 16),
+                (0x6061, 0, 8),
+                (0x6064, 0, 32),
+                (0x60B9, 0, 16),
+                (0x60BA, 0, 32),
+                (0x60FD, 0, 32),
+            ),
         ),
     ),
     DriveProfile(
@@ -349,6 +369,42 @@ def get_drive_profile(
     if profile.revision is not None and revision is not None and revision != profile.revision:
         return None
     return profile
+
+
+def read_pdo_mapping(slave: object, index: int) -> PdoLayout:
+    count = int.from_bytes(slave.sdo_read(index, 0), "little")
+    if not 0 < count <= 64:
+        raise RuntimeError(f"PDO mapping 0x{index:04X}:00 is invalid: {count}")
+    mapping = []
+    for subindex in range(1, count + 1):
+        value = int.from_bytes(slave.sdo_read(index, subindex), "little")
+        bit_length = value & 0xFF
+        if bit_length == 0:
+            raise RuntimeError(
+                f"PDO mapping 0x{index:04X}:{subindex:02X} has zero bit length"
+            )
+        mapping.append((value >> 16, (value >> 8) & 0xFF, bit_length))
+    return tuple(mapping)
+
+
+def pdo_layout_bytes(layout: PdoLayout) -> int:
+    total_bits = sum(bit_length for _index, _subindex, bit_length in layout)
+    if total_bits % 8:
+        raise ValueError(f"PDO layout is not byte aligned: {total_bits} bits")
+    return total_bits // 8
+
+
+def pdo_entry_offset(
+    layout: PdoLayout, index: int, subindex: int
+) -> int | None:
+    offset_bits = 0
+    for mapped_index, mapped_subindex, bit_length in layout:
+        if mapped_index == index and mapped_subindex == subindex:
+            if offset_bits % 8 or bit_length % 8:
+                return None
+            return offset_bits // 8
+        offset_bits += bit_length
+    return None
 
 
 def get_welding_profile(vendor: int, product: int) -> WeldingProfile | None:

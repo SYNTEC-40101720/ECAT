@@ -9,7 +9,14 @@ import time
 
 import pysoem
 
-from .device_profiles import DriveProfile, get_drive_profile, resolve_default_interface
+from .device_profiles import (
+    DriveProfile,
+    get_drive_profile,
+    pdo_entry_offset,
+    pdo_layout_bytes,
+    read_pdo_mapping,
+    resolve_default_interface,
+)
 
 CYCLE_US = 10_000
 MAX_VELOCITY = 100_000
@@ -24,15 +31,15 @@ def output_packet(controlword: int, velocity: int, mode: int = 3) -> bytes:
     )
 
 
-def statusword_from_input(slave: object) -> int:
+def statusword_from_input(slave: object, offset: int = 2) -> int:
     feedback = bytes(slave.input)
-    if len(feedback) < 4:
+    if offset < 0 or len(feedback) < offset + 2:
         return 0
-    return int.from_bytes(feedback[2:4], "little")
+    return int.from_bytes(feedback[offset : offset + 2], "little")
 
 
-def statusword_from_overlap_output(slave: object) -> int:
-    return statusword_from_input(slave)
+def statusword_from_overlap_output(slave: object, offset: int = 2) -> int:
+    return statusword_from_input(slave, offset)
 
 
 def wait_status(
@@ -42,6 +49,7 @@ def wait_status(
     mask: int,
     value: int,
     mode: int = 3,
+    status_offset: int = 2,
 ) -> int:
     last_status = 0
     for _ in range(100):
@@ -50,7 +58,7 @@ def wait_status(
         received = master.receive_processdata(CYCLE_US)
         if received != master.expected_wkc:
             raise RuntimeError(f"process-data WKC mismatch: {received}")
-        last_status = statusword_from_input(slave)
+        last_status = statusword_from_input(slave, status_offset)
         if last_status & DRIVE_FAULT:
             raise RuntimeError(f"drive fault during enable, statusword=0x{last_status:04X}")
         if last_status & mask == value:
@@ -98,13 +106,28 @@ def main() -> int:
         slave.sdo_write(0x6040, 0, (0x0080).to_bytes(2, "little"))
         slave.sdo_write(0x6060, 0, profile.mode.to_bytes(1, "little", signed=True))
 
-        if master.config_overlap_map() != profile.io_map_bytes:
+        io_map_size = master.config_overlap_map()
+        expected_tx_bytes = profile.tx_bytes
+        status_offset = 2
+        if profile.feedback_pdo_layouts:
+            feedback_mapping = read_pdo_mapping(slave, profile.tx_pdo)
+            if feedback_mapping not in profile.feedback_pdo_layouts:
+                raise RuntimeError("unsupported drive TxPDO mapping")
+            expected_tx_bytes = pdo_layout_bytes(feedback_mapping)
+            status_offset = pdo_entry_offset(feedback_mapping, 0x6041, 0)
+            if status_offset is None:
+                raise RuntimeError("drive TxPDO has no byte-aligned statusword")
+        if io_map_size != profile.rx_bytes + expected_tx_bytes:
             raise RuntimeError(
-                f"unexpected process image size (expected {profile.io_map_bytes} bytes)"
+                "unexpected process image size "
+                f"(expected {profile.rx_bytes + expected_tx_bytes} bytes)"
             )
-        if (len(slave.output), len(slave.input)) != (profile.rx_bytes, profile.tx_bytes):
+        if (len(slave.output), len(slave.input)) != (
+            profile.rx_bytes,
+            expected_tx_bytes,
+        ):
             raise RuntimeError(
-                f"unexpected Rx/Tx bytes (expected {profile.rx_bytes}/{profile.tx_bytes})"
+                f"unexpected Rx/Tx bytes (expected {profile.rx_bytes}/{expected_tx_bytes})"
             )
         slave.output = output_packet(0, 0, profile.mode)
         master.send_overlap_processdata()
@@ -116,9 +139,15 @@ def main() -> int:
         if master.state_check(pysoem.OP_STATE, 200_000) != pysoem.OP_STATE:
             raise RuntimeError("drive did not reach OP")
 
-        wait_status(master, slave, 0x0006, 0x006F, 0x0021, profile.mode)
-        wait_status(master, slave, 0x0007, 0x006F, 0x0023, profile.mode)
-        wait_status(master, slave, 0x000F, 0x006F, 0x0027, profile.mode)
+        wait_status(
+            master, slave, 0x0006, 0x006F, 0x0021, profile.mode, status_offset
+        )
+        wait_status(
+            master, slave, 0x0007, 0x006F, 0x0023, profile.mode, status_offset
+        )
+        wait_status(
+            master, slave, 0x000F, 0x006F, 0x0027, profile.mode, status_offset
+        )
 
         print(f"Jogging velocity={args.velocity} for up to {args.seconds:.2f}s")
         deadline = time.monotonic() + args.seconds

@@ -83,6 +83,20 @@ def test_csp_and_homing_profile_process_image_lengths():
     assert kaifull.mode_pdo(MODE_CSP).target_velocity_in_pdo is True
 
 
+def test_dm3c_profile_matches_observed_feedback_layout():
+    profile = device_profiles.DRIVE_PROFILES[0]
+    observed = (
+        (0x6064, 0, 32),
+        (0x6041, 0, 16),
+        (0x60B9, 0, 16),
+        (0x60BA, 0, 32),
+    )
+
+    assert profile.tx_bytes == 12
+    assert observed in profile.feedback_pdo_layouts
+    assert device_profiles.pdo_layout_bytes(observed) == 12
+
+
 def test_hauto_remote_io_profile_matches_esi_process_image():
     profile = device_profiles.get_remote_io_profile(0x01, 0x00010200)
 

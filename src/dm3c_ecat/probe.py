@@ -15,6 +15,8 @@ from .device_profiles import (
     get_welding_profile,
     initialize_remote_io_modules,
     is_tolerated_mapping_error,
+    pdo_layout_bytes,
+    read_pdo_mapping,
     resolve_remote_io_profile,
     resolve_default_interface,
 )
@@ -248,7 +250,18 @@ def main() -> int:
                 print(f"  0x1C13:01: {read_sdo_hex(slave, 0x1C13, 1):s}")
                 rx_pdo = drive_profile.rx_pdo if args.configure_velocity_pdo else 0x1602
                 assigned_rx_bits[index] = print_mapping(slave, rx_pdo, "RxPDO")
+                tx_mapping = read_pdo_mapping(slave, drive_profile.tx_pdo)
                 print_mapping(slave, drive_profile.tx_pdo, "TxPDO")
+                if drive_profile.feedback_pdo_layouts:
+                    mapping_status = (
+                        "supported"
+                        if tx_mapping in drive_profile.feedback_pdo_layouts
+                        else "unsupported"
+                    )
+                    print(
+                        f"  TxPDO layout: {mapping_status}, "
+                        f"{pdo_layout_bytes(tx_mapping)} bytes"
+                    )
             elif welding_profile is not None:
                 print(
                     f"  Profile: {welding_profile.name} RxPDO 0x{welding_profile.rx_pdo:04X} "
@@ -277,9 +290,25 @@ def main() -> int:
                 revision,
             )
             supported_profile = supported_profile or get_welding_profile(slave.man, slave.id)
+            expected_input_size = (
+                supported_profile.tx_bytes
+                if supported_profile is not None
+                else len(slave.input)
+            )
+            if (
+                supported_profile is not None
+                and isinstance(supported_profile, DriveProfile)
+                and supported_profile.feedback_pdo_layouts
+            ):
+                try:
+                    mapped_tx = read_pdo_mapping(slave, supported_profile.tx_pdo)
+                    if mapped_tx in supported_profile.feedback_pdo_layouts:
+                        expected_input_size = pdo_layout_bytes(mapped_tx)
+                except Exception:
+                    pass
             if supported_profile is not None and (
                 len(slave.output) != supported_profile.rx_bytes
-                or len(slave.input) != supported_profile.tx_bytes
+                or len(slave.input) != expected_input_size
             ):
                 print(
                     f"WARNING: slave {index} process image size differs from the "

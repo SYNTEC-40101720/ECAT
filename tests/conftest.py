@@ -17,7 +17,7 @@ import pytest
 
 
 class FakeProcessSlave:
-    def __init__(self, output_size: int = 15, input_size: int = 19) -> None:
+    def __init__(self, output_size: int = 15, input_size: int = 12) -> None:
         self.output = bytearray(output_size)
         self.input = bytearray(input_size)
         self.man = 0x4321
