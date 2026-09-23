@@ -6,7 +6,19 @@ import pysoem
 import pytest
 
 import dm3c_ecat.device_profiles as device_profiles
-from dm3c_ecat.motion_modes import MODE_CSP, MODE_HM, MODE_PP, MODE_PV
+from dm3c_ecat.device_profiles import (
+    deserialize_feedback,
+    required_role_offsets,
+    serialize_command,
+)
+from dm3c_ecat.motion_modes import (
+    MODE_CSP,
+    MODE_HM,
+    MODE_PP,
+    MODE_PV,
+    PdoField,
+    PdoRole,
+)
 
 
 def test_default_interface_ignores_virtual_adapters(monkeypatch):
@@ -269,3 +281,162 @@ def test_remote_io_module_initialization_writes_repeated_slot_bytes():
         call(0x8020, 1, b"\x7C\x00"),
         call(0x8030, 1, b"\x7F\x00"),
     ]
+
+
+# --- Field-driven PDO serialize/deserialize ---
+
+
+def test_serialize_command_writes_named_fields_at_layout_offsets():
+    # DM3C PV RxPDO layout: controlword + target_velocity + accel + decel + mode.
+    layout = (
+        (0x6040, 0, 16),
+        (0x60FF, 0, 32),
+        (0x6083, 0, 32),
+        (0x6084, 0, 32),
+        (0x6060, 0, 8),
+    )
+    fields = device_profiles.DRIVE_PROFILES[0].mode_pdo(MODE_PV).rx_fields
+    image = serialize_command(
+        layout,
+        fields,
+        {
+            PdoRole.CONTROLWORD: 0x000F,
+            PdoRole.TARGET_VELOCITY: 12345,
+            PdoRole.ACCELERATION: 1000,
+            PdoRole.DECELERATION: 1000,
+            PdoRole.MODE_OF_OPERATION: 3,
+        },
+    )
+    assert len(image) == 15
+    assert int.from_bytes(image[0:2], "little") == 0x000F
+    assert int.from_bytes(image[2:6], "little", signed=True) == 12345
+    assert int.from_bytes(image[6:10], "little", signed=True) == 1000
+    assert int.from_bytes(image[10:14], "little", signed=True) == 1000
+    assert image[14] == 3
+
+
+def test_serialize_command_tolerates_field_order_drift():
+    # Firmware reorders entries (velocity first, controlword last). The runtime
+    # must still write each value at the firmware's real offset.
+    layout = (
+        (0x60FF, 0, 32),
+        (0x6083, 0, 32),
+        (0x6084, 0, 32),
+        (0x6060, 0, 8),
+        (0x6040, 0, 16),
+    )
+    fields = device_profiles.DRIVE_PROFILES[0].mode_pdo(MODE_PV).rx_fields
+    image = serialize_command(
+        layout,
+        fields,
+        {
+            PdoRole.CONTROLWORD: 0x000F,
+            PdoRole.TARGET_VELOCITY: 12345,
+            PdoRole.ACCELERATION: 1000,
+            PdoRole.DECELERATION: 1000,
+            PdoRole.MODE_OF_OPERATION: 3,
+        },
+    )
+    assert int.from_bytes(image[0:4], "little", signed=True) == 12345
+    assert image[12] == 3  # mode byte at offset 12
+    assert int.from_bytes(image[13:15], "little") == 0x000F  # controlword at 13
+
+
+def test_serialize_command_zero_fills_undeclared_entries():
+    # Layout carries an extra vendor entry 0x2000 with no declared role; it must
+    # be left zero while named fields are still written at their offsets.
+    layout = (
+        (0x6040, 0, 16),
+        (0x2000, 0, 16),
+        (0x60FF, 0, 32),
+    )
+    fields = (
+        PdoField(0x6040, 0, 16, PdoRole.CONTROLWORD),
+        PdoField(0x60FF, 0, 32, PdoRole.TARGET_VELOCITY),
+    )
+    image = serialize_command(
+        layout,
+        fields,
+        {PdoRole.CONTROLWORD: 0x0040, PdoRole.TARGET_VELOCITY: 7},
+    )
+    assert int.from_bytes(image[0:2], "little") == 0x0040
+    assert int.from_bytes(image[2:4], "little") == 0  # undeclared entry zeroed
+    assert int.from_bytes(image[4:8], "little", signed=True) == 7
+
+
+def test_deserialize_feedback_decodes_by_role_across_layout_drift():
+    # DM3C field-measured 16-byte TxPDO: statusword first, then position.
+    layout = (
+        (0x6041, 0, 16),
+        (0x6064, 0, 32),
+        (0x606C, 0, 32),
+        (0x60B9, 0, 16),
+        (0x60BA, 0, 32),
+    )
+    data = bytearray(16)
+    data[0:2] = (0x0027).to_bytes(2, "little")
+    data[2:6] = (98765).to_bytes(4, "little", signed=True)
+    fields = device_profiles.DRIVE_PROFILES[0].mode_pdo(MODE_PV).tx_fields
+    decoded = deserialize_feedback(bytes(data), layout, fields)
+    assert decoded[PdoRole.STATUSWORD] == 0x0027
+    assert decoded[PdoRole.ACTUAL_POSITION] == 98765
+    # Roles absent from this layout are simply not present in the result.
+    assert PdoRole.ERROR_CODE not in decoded
+
+
+def test_required_role_offsets_rejects_missing_statusword():
+    layout = (
+        (0x6064, 0, 32),
+        (0x60B9, 0, 16),
+    )
+    with pytest.raises(RuntimeError, match="STATUSWORD"):
+        required_role_offsets(layout, (PdoRole.ACTUAL_POSITION, PdoRole.STATUSWORD))
+
+
+def test_required_role_offsets_rejects_missing_actual_position():
+    layout = (
+        (0x6041, 0, 16),
+    )
+    with pytest.raises(RuntimeError, match="ACTUAL_POSITION"):
+        required_role_offsets(layout, (PdoRole.ACTUAL_POSITION, PdoRole.STATUSWORD))
+
+
+def test_required_role_offsets_accepts_drifted_dm3c_layout():
+    # The 16-byte field-measured layout that broke the old whitelist must pass.
+    layout = (
+        (0x6041, 0, 16),
+        (0x6064, 0, 32),
+        (0x606C, 0, 32),
+        (0x60B9, 0, 16),
+        (0x60BA, 0, 32),
+    )
+    offsets = required_role_offsets(
+        layout, (PdoRole.ACTUAL_POSITION, PdoRole.STATUSWORD)
+    )
+    assert offsets[PdoRole.STATUSWORD] == 0
+    assert offsets[PdoRole.ACTUAL_POSITION] == 2
+
+
+def test_dm3c_required_feedback_roles_default_gates_startup():
+    profile = device_profiles.DRIVE_PROFILES[0]
+    assert PdoRole.ACTUAL_POSITION in profile.required_feedback_roles
+    assert PdoRole.STATUSWORD in profile.required_feedback_roles
+    # A brand-new firmware layout that is NOT in the legacy whitelist must still
+    # be accepted by the field-driven path as long as both required roles exist.
+    novel = (
+        (0x6064, 0, 32),
+        (0x6041, 0, 16),
+        (0x60B9, 0, 16),
+        (0x60BA, 0, 32),
+        (0x60FD, 0, 32),
+    )
+    assert novel not in profile.feedback_pdo_layouts
+    required_role_offsets(novel, profile.required_feedback_roles)
+
+
+def test_pdo_field_signed_flag_matches_ciA402_semantics():
+    assert PdoField(0x607A, 0, 32, PdoRole.TARGET_POSITION).signed is True
+    assert PdoField(0x6040, 0, 16, PdoRole.CONTROLWORD).signed is False
+    assert PdoField(0x6064, 0, 32, PdoRole.ACTUAL_POSITION).signed is True
+    assert PdoField(0x6041, 0, 16, PdoRole.STATUSWORD).signed is False
+    assert PdoField(0x6060, 0, 8, PdoRole.MODE_OF_OPERATION).signed is True

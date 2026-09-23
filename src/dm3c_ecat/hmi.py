@@ -17,7 +17,10 @@ from .device_profiles import (
     is_tolerated_mapping_error,
     pdo_layout_bytes,
     read_pdo_mapping,
+    required_role_offsets,
     resolve_default_interface,
+    serialize_command,
+    deserialize_feedback,
 )
 from .logging_setup import DEFAULT_LOG_FILE, configure_logging
 from .motion_modes import (
@@ -29,6 +32,8 @@ from .motion_modes import (
     MODE_VALUES,
     MODE_VM,
     MOTION_MODES,
+    ModePdo,
+    PdoRole,
     modes_from_capability_word,
 )
 from .welding import (
@@ -243,7 +248,9 @@ class Runtime:
         self.error = 0
         self.mode = 0
         self.drive_feedback_mapping = ()
+        self.drive_tx_layout: tuple[tuple[int, int, int], ...] = ()
         self.drive_tx_bytes: int | None = None
+        self.drive_rx_layout: tuple[tuple[int, int, int], ...] = ()
         self.wkc = 0
         self.expected_wkc = 0
         self._master_open = False
@@ -384,7 +391,9 @@ class Runtime:
             self.error = 0
             self.mode = 0
             self.drive_feedback_mapping = ()
+            self.drive_tx_layout = ()
             self.drive_tx_bytes = None
+            self.drive_rx_layout = ()
             self.wkc = 0
             self.expected_wkc = 0
             self.enabled = False
@@ -1399,24 +1408,46 @@ class Runtime:
         if self.profile is None:
             raise RuntimeError("drive profile is not available")
         self.drive_feedback_mapping = ()
-        self.drive_tx_bytes = self.profile.tx_bytes
-        if not self.profile.feedback_pdo_layouts:
+        self.drive_tx_layout = ()
+        self.drive_tx_bytes = self.profile.profile_tx_bytes
+        if not self.profile.feedback_pdo_layouts and not self.profile.required_feedback_roles:
             return
         drive_slave = self._drive_device()
         if drive_slave is None:
             raise RuntimeError("drive process data is not configured")
-        mapping = read_pdo_mapping(drive_slave, self.profile.tx_pdo)
-        if mapping not in self.profile.feedback_pdo_layouts:
+        layout = read_pdo_mapping(drive_slave, self.profile.tx_pdo)
+        self.drive_tx_layout = layout
+        # Field-driven path: validate the drive-reported TxPDO layout contains
+        # byte-aligned entries for every required feedback role. This adapts to
+        # firmware field-order/field-set drift without a whitelist change.
+        if self.profile.required_feedback_roles:
+            role_offsets = required_role_offsets(
+                layout, self.profile.required_feedback_roles
+            )
+            self.drive_feedback_mapping = layout
+            self.drive_tx_bytes = pdo_layout_bytes(layout)
+            LOGGER.info(
+                "%s TxPDO 0x%04X resolved by role: %s, %d bytes",
+                self.profile.name,
+                self.profile.tx_pdo,
+                ", ".join(
+                    f"0x{role.index:04X}@{offset}" for role, offset in role_offsets.items()
+                ),
+                self.drive_tx_bytes,
+            )
+            return
+        # Legacy whitelist path (profiles without required_feedback_roles).
+        if layout not in self.profile.feedback_pdo_layouts:
             formatted = ", ".join(
                 f"0x{index:04X}:{subindex}={bit_length}bit"
-                for index, subindex, bit_length in mapping
+                for index, subindex, bit_length in layout
             )
             raise RuntimeError(
                 f"{self.profile.name} unsupported TxPDO 0x{self.profile.tx_pdo:04X} "
                 f"mapping: {formatted}"
             )
-        self.drive_feedback_mapping = mapping
-        self.drive_tx_bytes = pdo_layout_bytes(mapping)
+        self.drive_feedback_mapping = layout
+        self.drive_tx_bytes = pdo_layout_bytes(layout)
 
     def _tsvb_write_pp_sdo(
         self,
@@ -1794,6 +1825,27 @@ class Runtime:
         with self.process_data_lock:
             return self._cycle_unlocked(controlword, velocity)
 
+    def _serialize_command(
+        self,
+        mode_pdo: ModePdo,
+        values: dict[PdoRole, int],
+    ) -> bytes:
+        """Serialize a command image from the drive-reported RxPDO layout.
+
+        Uses ``self.drive_rx_layout`` (read at configure time) so the command is
+        built at the firmware's real field offsets. Only fields whose role is in
+        ``values`` are written; other PDO entries are left zero. The output is
+        sized to the RxPDO byte count from the profile.
+        """
+        return bytes(
+            serialize_command(
+                self.drive_rx_layout,
+                mode_pdo.rx_fields,
+                values,
+                total_bytes=mode_pdo.rx_bytes,
+            )
+        )
+
     def _cycle_unlocked(self, controlword: int, velocity: int = 0) -> int:
         drive_slave = self._drive_device()
         if self.profile is None or drive_slave is None:
@@ -1802,26 +1854,58 @@ class Runtime:
         mode_pdo = self.profile.mode_pdo(mode) if self.profile else None
         packet_kind = mode_pdo.packet_kind if mode_pdo else "velocity"
         mode_value = MODE_VALUES.get(mode, 3)
+        # When the profile declares rx_fields and the drive-reported RxPDO layout
+        # is available, serialize the command by role at the firmware's real
+        # offsets (field-driven path). Otherwise fall back to the hard-coded
+        # packet encoder for this packet_kind. The field-driven image must
+        # reproduce the hard-coded byte layout for unchanged firmware, so the
+        # two paths are equivalent on a stable drive and diverge only on drift.
+        use_field_encoder = bool(
+            mode_pdo is not None
+            and mode_pdo.rx_fields
+            and self.drive_rx_layout
+        )
         if packet_kind == "profile_position":
             with self.lock:
                 target_position = self.pp_target_position
                 profile_velocity = self.pp_profile_velocity
                 acceleration = self.pp_acceleration
                 deceleration = self.pp_deceleration
-            drive_slave.output = pp_packet(
-                controlword,
-                target_position,
-                profile_velocity,
-                acceleration,
-                deceleration,
-                mode_value,
-            )
+            if use_field_encoder:
+                values = {
+                    PdoRole.CONTROLWORD: controlword,
+                    PdoRole.TARGET_POSITION: target_position,
+                    PdoRole.PROFILE_VELOCITY: profile_velocity,
+                    PdoRole.ACCELERATION: acceleration,
+                    PdoRole.DECELERATION: deceleration,
+                    PdoRole.MODE_OF_OPERATION: mode_value,
+                }
+                drive_slave.output = self._serialize_command(mode_pdo, values)
+            else:
+                drive_slave.output = pp_packet(
+                    controlword,
+                    target_position,
+                    profile_velocity,
+                    acceleration,
+                    deceleration,
+                    mode_value,
+                )
         elif packet_kind == "velocity":
             ramp_velocity = velocity or self.last_target_velocity
             acceleration, deceleration = self.ramp_values(ramp_velocity)
-            drive_slave.output = packet(
-                controlword, velocity, acceleration, deceleration, mode_value
-            )
+            if use_field_encoder:
+                values = {
+                    PdoRole.CONTROLWORD: controlword,
+                    PdoRole.TARGET_VELOCITY: velocity,
+                    PdoRole.ACCELERATION: acceleration,
+                    PdoRole.DECELERATION: deceleration,
+                    PdoRole.MODE_OF_OPERATION: mode_value,
+                }
+                drive_slave.output = self._serialize_command(mode_pdo, values)
+            else:
+                drive_slave.output = packet(
+                    controlword, velocity, acceleration, deceleration, mode_value
+                )
         elif packet_kind == "homing":
             with self.lock:
                 if self.homing_pending:
@@ -1848,21 +1932,36 @@ class Runtime:
         elif packet_kind == "tsvb_velocity":
             with self.lock:
                 io_output = self.io_output_mask if self.io_profile is None else 0
-            drive_slave.output = tsvb_velocity_packet(
-                controlword, velocity, mode=mode_value, io_output=io_output
-            )
+            if use_field_encoder:
+                values = {
+                    PdoRole.CONTROLWORD: controlword,
+                    PdoRole.TARGET_VELOCITY: velocity,
+                }
+                drive_slave.output = self._serialize_command(mode_pdo, values)
+            else:
+                drive_slave.output = tsvb_velocity_packet(
+                    controlword, velocity, mode=mode_value, io_output=io_output
+                )
         elif packet_kind == "tsvb_pp":
             with self.lock:
                 target_position = self.pp_target_position
                 profile_velocity = self.pp_profile_velocity
                 io_output = self.io_output_mask if self.io_profile is None else 0
-            drive_slave.output = tsvb_pp_packet(
-                controlword,
-                target_position,
-                profile_velocity,
-                mode=mode_value,
-                io_output=io_output,
-            )
+            if use_field_encoder:
+                values = {
+                    PdoRole.CONTROLWORD: controlword,
+                    PdoRole.TARGET_POSITION: target_position,
+                    PdoRole.TARGET_VELOCITY: profile_velocity,
+                }
+                drive_slave.output = self._serialize_command(mode_pdo, values)
+            else:
+                drive_slave.output = tsvb_pp_packet(
+                    controlword,
+                    target_position,
+                    profile_velocity,
+                    mode=mode_value,
+                    io_output=io_output,
+                )
         elif packet_kind == "tsvb_homing":
             with self.lock:
                 if self.homing_pending:
@@ -1880,25 +1979,44 @@ class Runtime:
             target_position = self._next_csp_target()
             with self.lock:
                 self.csp_command_position = target_position
-            drive_slave.output = tsvb_csp_packet(
-                controlword,
-                target_position,
-                target_velocity=0,
-                mode=mode_value,
-            )
+            if use_field_encoder:
+                values = {
+                    PdoRole.CONTROLWORD: controlword,
+                    PdoRole.TARGET_POSITION: target_position,
+                    PdoRole.TARGET_VELOCITY: 0,
+                    PdoRole.TARGET_TORQUE: 0,
+                }
+                drive_slave.output = self._serialize_command(mode_pdo, values)
+            else:
+                drive_slave.output = tsvb_csp_packet(
+                    controlword,
+                    target_position,
+                    target_velocity=0,
+                    mode=mode_value,
+                )
         elif packet_kind == "csp":
             target_position = self._next_csp_target()
             with self.lock:
                 self.csp_command_position = target_position
             mode_in_pdo = mode_pdo.mode_in_pdo if mode_pdo else True
             target_velocity_in_pdo = mode_pdo.target_velocity_in_pdo if mode_pdo else False
-            drive_slave.output = csp_packet(
-                controlword,
-                target_position,
-                mode=mode_value,
-                mode_in_pdo=mode_in_pdo,
-                target_velocity_in_pdo=target_velocity_in_pdo,
-            )
+            if use_field_encoder:
+                values = {
+                    PdoRole.CONTROLWORD: controlword,
+                    PdoRole.TARGET_POSITION: target_position,
+                    PdoRole.MODE_OF_OPERATION: mode_value,
+                }
+                if target_velocity_in_pdo:
+                    values[PdoRole.TARGET_VELOCITY] = 0
+                drive_slave.output = self._serialize_command(mode_pdo, values)
+            else:
+                drive_slave.output = csp_packet(
+                    controlword,
+                    target_position,
+                    mode=mode_value,
+                    mode_in_pdo=mode_in_pdo,
+                    target_velocity_in_pdo=target_velocity_in_pdo,
+                )
         else:
             raise RuntimeError(f"no packet encoder for {mode.upper()} mode")
         self._write_welding_command()
@@ -1911,6 +2029,33 @@ class Runtime:
         if drive_slave is None:
             return
         data = bytes(drive_slave.input)
+        mode_pdo = (
+            self.profile.mode_pdo(self.motion_mode) if self.profile is not None else None
+        )
+        # Field-driven decode: walk the drive-reported TxPDO layout and decode
+        # each field declared with a role for the current mode. Missing roles
+        # fall back to safe defaults (error=0, mode=current commanded mode).
+        if (
+            self.drive_feedback_mapping
+            and mode_pdo is not None
+            and mode_pdo.tx_fields
+        ):
+            decoded = deserialize_feedback(
+                data, self.drive_feedback_mapping, mode_pdo.tx_fields
+            )
+            self.error = decoded.get(PdoRole.ERROR_CODE, 0)
+            self.statusword = decoded.get(PdoRole.STATUSWORD, 0)
+            actual_position = decoded.get(PdoRole.ACTUAL_POSITION)
+            if actual_position is not None:
+                self.actual_position = actual_position
+            mode_display = decoded.get(PdoRole.MODE_OF_OPERATION_DISPLAY)
+            self.mode = (
+                mode_display
+                if mode_display is not None
+                else MODE_VALUES.get(self.motion_mode, 0)
+            )
+            return
+        # Legacy whitelist / fixed-layout decode by object index.
         if self.drive_feedback_mapping:
             error = self._mapped_feedback_value(
                 data, self.drive_feedback_mapping, 0x603F, 0, signed=False
@@ -2060,6 +2205,14 @@ class Runtime:
             0x6060, 0, mode_value.to_bytes(1, "little", signed=True)
         )
         self._validate_drive_pdo_assignments(rx_pdo)
+        # Read the drive-reported RxPDO field layout so cycle() can serialize
+        # commands by role at the firmware's real offsets. This adapts to RxPDO
+        # field-order drift the same way the TxPDO path adapts to feedback drift.
+        mode_pdo = self.profile.mode_pdo(mode)
+        if mode_pdo is not None and mode_pdo.rx_fields:
+            self.drive_rx_layout = read_pdo_mapping(drive_slave, rx_pdo)
+        else:
+            self.drive_rx_layout = ()
         self.motion_mode = mode
         io_map_size = self._map_process_data(overlap=True)
         self.expected_wkc = self.master.expected_wkc
@@ -2154,6 +2307,8 @@ class Runtime:
         self.io_profile = None
         self.welding_profile = None
         self.drive_feedback_mapping = ()
+        self.drive_tx_layout = ()
+        self.drive_rx_layout = ()
         self.drive_tx_bytes = None
         unsupported: list[str] = []
         for candidate in self.master.slaves:

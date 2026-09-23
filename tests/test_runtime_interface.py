@@ -351,6 +351,14 @@ def test_dm3c_accepts_observed_txpdo_layout_and_decodes_feedback(runtime):
         (0x1C12, 1): b"\x02\x16",
         (0x1C13, 0): b"\x01",
         (0x1C13, 1): b"\x00\x1A",
+        # RxPDO 0x1602 (PV): controlword + target_velocity + accel + decel + mode
+        (0x1602, 0): b"\x05",
+        (0x1602, 1): b"\x10\x00\x40\x60",
+        (0x1602, 2): b"\x20\x00\xFF\x60",
+        (0x1602, 3): b"\x20\x00\x83\x60",
+        (0x1602, 4): b"\x20\x00\x84\x60",
+        (0x1602, 5): b"\x08\x00\x60\x60",
+        # TxPDO 0x1A00: position + statusword + torque_actual + velocity_demand
         (0x1A00, 0): b"\x04",
         (0x1A00, 1): b"\x20\x00\x64\x60",
         (0x1A00, 2): b"\x10\x00\x41\x60",
@@ -690,6 +698,17 @@ def test_runtime_keeps_drive_and_remote_io_on_the_same_bus(runtime):
         (0x1C12, 1): b"\x02\x16",
         (0x1C13, 0): b"\x01",
         (0x1C13, 1): b"\x00\x1A",
+        # TxPDO 0x1A00 (23 bytes) must carry ACTUAL_POSITION + STATUSWORD for the
+        # required_feedback_roles gate; the layout mirrors the ESI feedback set.
+        (0x1A00, 0): b"\x08",
+        (0x1A00, 1): b"\x20\x00\x64\x60",
+        (0x1A00, 2): b"\x10\x00\x41\x60",
+        (0x1A00, 3): b"\x08\x00\x61\x60",
+        (0x1A00, 4): b"\x10\x00\x3F\x60",
+        (0x1A00, 5): b"\x10\x00\xB9\x60",
+        (0x1A00, 6): b"\x20\x00\xBA\x60",
+        (0x1A00, 7): b"\x20\x00\xFD\x60",
+        (0x1A00, 8): b"\x20\x00\xF4\x60",
     }.get((index, subindex), b"\x00")
     io_slave = MagicMock()
     io_slave.man = REMOTE_IO_PROFILES[0].vendor

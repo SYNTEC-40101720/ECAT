@@ -17,7 +17,7 @@ from .device_profiles import (
     read_pdo_mapping,
     resolve_default_interface,
 )
-from .motion_modes import MODE_PV
+from .motion_modes import MODE_PV, PdoRole
 
 CYCLE_US = 10_000
 MAX_VELOCITY = 100_000
@@ -131,9 +131,20 @@ def main() -> int:
         slave.sdo_write(0x6060, 0, profile.mode.to_bytes(1, "little", signed=True))
 
         io_map_size = master.config_overlap_map()
-        expected_tx_bytes = profile.tx_bytes
+        expected_tx_bytes = profile.profile_tx_bytes
         status_offset = 2
-        if profile.feedback_pdo_layouts:
+        if profile.required_feedback_roles:
+            # Field-driven feedback validation: the drive-reported TxPDO layout
+            # must carry every required role at a byte-aligned offset.
+            from .device_profiles import required_role_offsets
+
+            feedback_mapping = read_pdo_mapping(slave, profile.tx_pdo)
+            role_offsets = required_role_offsets(
+                feedback_mapping, profile.required_feedback_roles
+            )
+            expected_tx_bytes = pdo_layout_bytes(feedback_mapping)
+            status_offset = role_offsets[PdoRole.STATUSWORD]
+        elif profile.feedback_pdo_layouts:
             feedback_mapping = read_pdo_mapping(slave, profile.tx_pdo)
             if feedback_mapping not in profile.feedback_pdo_layouts:
                 raise RuntimeError("unsupported drive TxPDO mapping")

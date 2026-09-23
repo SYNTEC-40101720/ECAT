@@ -1,4 +1,22 @@
-"""Supported EtherCAT drive identities and process-image requirements."""
+"""Supported EtherCAT drive identities and process-image requirements.
+
+Architecture (field-driven PDO mapping)
+=======================================
+EtherCAT drive PDO field layouts are NOT taken from a static whitelist. They are
+read at runtime from the drive via SDO (0x16xx / 0x1Axx mapping objects) and
+decoded by object dictionary index + subindex. A ``DriveProfile`` only declares,
+per motion mode, which CiA 402 object entries the Rx/Tx PDO is expected to carry
+and the *role* each entry plays (controlword, target position, statusword ...).
+The runtime builds the actual byte image by walking the drive-reported layout and
+serializing/deserializing the named fields at their real offsets.
+
+This means firmware field-order or field-set drift no longer requires a code or
+whitelist change: as long as the drive still reports the required fields for a
+mode (e.g. actual position + statusword on the TxPDO), the runtime adapts. Fields
+the runtime does not need are ignored on read and zero-filled on write. A missing
+required field is rejected with a precise, actionable error instead of a generic
+"unsupported layout".
+"""
 
 from __future__ import annotations
 
@@ -8,11 +26,21 @@ from dataclasses import dataclass, replace
 
 import pysoem
 
-from .motion_modes import MODE_CSP, MODE_HM, MODE_PP, MODE_PV, ModePdo
+from .motion_modes import (
+    MODE_CSP,
+    MODE_HM,
+    MODE_PP,
+    MODE_PV,
+    ModePdo,
+    PdoField,
+    PdoRole,
+)
 
 LOGGER = logging.getLogger("ecat_test.profiles")
 
 PdoLayout = tuple[tuple[int, int, int], ...]
+"""Runtime PDO mapping as ``(index, subindex, bit_length)`` tuples in PDO order."""
+
 
 _VIRTUAL_ADAPTER_MARKERS = (
     "wan miniport",
@@ -94,10 +122,24 @@ class DriveProfile:
     pp_mode: int = 1
     mode_pdos: tuple[ModePdo, ...] = ()
     feedback_pdo_layouts: tuple[PdoLayout, ...] = ()
+    # Field-driven feedback: roles that must be present in the runtime TxPDO
+    # layout for this drive to be usable. When set, feedback validation ignores
+    # feedback_pdo_layouts and instead verifies the drive-reported TxPDO layout
+    # contains byte-aligned entries for each required role.
+    required_feedback_roles: tuple[PdoRole, ...] = (
+        PdoRole.ACTUAL_POSITION,
+        PdoRole.STATUSWORD,
+    )
 
     @property
     def io_map_bytes(self) -> int:
-        return self.rx_bytes + self.tx_bytes
+        return self.rx_bytes + self.profile_tx_bytes
+
+    @property
+    def profile_tx_bytes(self) -> int:
+        # Declared TxPDO size from profile; runtime may override with the actual
+        # byte count read from the drive when required_feedback_roles is used.
+        return self.tx_bytes
 
     def mode_pdo(self, mode: str) -> ModePdo | None:
         return next((item for item in self.mode_pdos if item.mode == mode), None)
@@ -227,15 +269,98 @@ DRIVE_PROFILES = (
         12,
         revision=0x0001,
         mode_pdos=(
-            ModePdo(MODE_PV, 0x1602, 15, "velocity"),
-            ModePdo(MODE_PP, 0x1601, 19, "profile_position"),
-            ModePdo(MODE_HM, 0x1603, 20, "homing"),
-            ModePdo(MODE_CSP, 0x1600, 8, "csp", mode_in_pdo=False),
+            # Field-driven: rx_fields/tx_fields declare the CiA 402 entries the
+            # runtime serializes/deserializes by role. The drive-reported PDO
+            # layout (read at runtime) supplies the real offsets; fields absent
+            # from the drive layout are skipped, and required_feedback_roles
+            # (ACTUAL_POSITION + STATUSWORD) gate startup.
+            ModePdo(
+                MODE_PV,
+                0x1602,
+                15,
+                "velocity",
+                rx_fields=(
+                    PdoField(0x6040, 0, 16, PdoRole.CONTROLWORD),
+                    PdoField(0x60FF, 0, 32, PdoRole.TARGET_VELOCITY),
+                    PdoField(0x6083, 0, 32, PdoRole.ACCELERATION),
+                    PdoField(0x6084, 0, 32, PdoRole.DECELERATION),
+                    PdoField(0x6060, 0, 8, PdoRole.MODE_OF_OPERATION),
+                ),
+                tx_fields=(
+                    PdoField(0x6064, 0, 32, PdoRole.ACTUAL_POSITION),
+                    PdoField(0x6041, 0, 16, PdoRole.STATUSWORD),
+                    PdoField(0x60B9, 0, 16, PdoRole.TORQUE_ACTUAL),
+                    PdoField(0x60BA, 0, 32, PdoRole.VELOCITY_DEMAND),
+                ),
+            ),
+            ModePdo(
+                MODE_PP,
+                0x1601,
+                19,
+                "profile_position",
+                rx_fields=(
+                    PdoField(0x6040, 0, 16, PdoRole.CONTROLWORD),
+                    PdoField(0x607A, 0, 32, PdoRole.TARGET_POSITION),
+                    PdoField(0x60FF, 0, 32, PdoRole.PROFILE_VELOCITY),
+                    PdoField(0x6083, 0, 32, PdoRole.ACCELERATION),
+                    PdoField(0x6084, 0, 32, PdoRole.DECELERATION),
+                    PdoField(0x6060, 0, 8, PdoRole.MODE_OF_OPERATION),
+                ),
+                tx_fields=(
+                    PdoField(0x6064, 0, 32, PdoRole.ACTUAL_POSITION),
+                    PdoField(0x6041, 0, 16, PdoRole.STATUSWORD),
+                    PdoField(0x60B9, 0, 16, PdoRole.TORQUE_ACTUAL),
+                    PdoField(0x60BA, 0, 32, PdoRole.VELOCITY_DEMAND),
+                ),
+            ),
+            ModePdo(
+                MODE_HM,
+                0x1603,
+                20,
+                "homing",
+                rx_fields=(
+                    PdoField(0x6040, 0, 16, PdoRole.CONTROLWORD),
+                    PdoField(0x6060, 0, 8, PdoRole.MODE_OF_OPERATION),
+                ),
+                tx_fields=(
+                    PdoField(0x6064, 0, 32, PdoRole.ACTUAL_POSITION),
+                    PdoField(0x6041, 0, 16, PdoRole.STATUSWORD),
+                    PdoField(0x60B9, 0, 16, PdoRole.TORQUE_ACTUAL),
+                    PdoField(0x60BA, 0, 32, PdoRole.VELOCITY_DEMAND),
+                ),
+            ),
+            ModePdo(
+                MODE_CSP,
+                0x1600,
+                8,
+                "csp",
+                mode_in_pdo=False,
+                rx_fields=(
+                    PdoField(0x6040, 0, 16, PdoRole.CONTROLWORD),
+                    PdoField(0x607A, 0, 32, PdoRole.TARGET_POSITION),
+                ),
+                tx_fields=(
+                    PdoField(0x6064, 0, 32, PdoRole.ACTUAL_POSITION),
+                    PdoField(0x6041, 0, 16, PdoRole.STATUSWORD),
+                    PdoField(0x60B9, 0, 16, PdoRole.TORQUE_ACTUAL),
+                    PdoField(0x60BA, 0, 32, PdoRole.VELOCITY_DEMAND),
+                ),
+            ),
         ),
+        # Legacy whitelist retained for probe.py diagnostics and old tests; the
+        # runtime now validates via required_feedback_roles against the
+        # drive-reported layout instead of matching this list exactly.
         feedback_pdo_layouts=(
             (
                 (0x6064, 0, 32),
                 (0x6041, 0, 16),
+                (0x60B9, 0, 16),
+                (0x60BA, 0, 32),
+            ),
+            (
+                (0x6041, 0, 16),
+                (0x6064, 0, 32),
+                (0x606C, 0, 32),
                 (0x60B9, 0, 16),
                 (0x60BA, 0, 32),
             ),
@@ -260,6 +385,12 @@ DRIVE_PROFILES = (
         23,
         revision=0x0001,
         mode_pdos=(
+            # Field-driven rx_fields/tx_fields are not declared for KaiFull yet:
+            # the per-mode RxPDO field order for this drive has not been
+            # field-measured, so the runtime falls back to the hard-coded packet
+            # encoders. Feedback still validates required_feedback_roles against
+            # the drive-reported TxPDO layout (0x1A00 must carry ACTUAL_POSITION +
+            # STATUSWORD), then decodes via the legacy index-based path.
             ModePdo(MODE_PV, 0x1602, 15, "velocity"),
             ModePdo(MODE_PP, 0x1601, 19, "profile_position"),
             ModePdo(MODE_HM, 0x1603, 20, "homing"),
@@ -282,17 +413,49 @@ DRIVE_PROFILES = (
         10,
         revision=0x00010008,
         mode_pdos=(
-            # Field 0x6502 on this unit reports 0x3A1 = PP|IP|CSP|CST; PV/HM not
-            # enabled by firmware. Actual PDO mapping (read from the drive):
-            #   0x1601 (PP): 0x607A:32 + 0x60FF:32 + 0x6040:16 = 10 bytes (no mode)
+            # Field 0x6502 reports PP|IP|CSP|CST; PV/HM not enabled by firmware.
+            # Mode is set via SDO 0x6060, not carried in the PDO (mode_in_pdo=False).
+            # Actual PDO mapping (read from the drive):
+            #   0x1601 (PP): 0x607A:32 + 0x60FF:32 + 0x6040:16 = 10 bytes
             #   0x1600 (CSP): 0x607A:32 + 0x60FF:32 + 0x6071:16 + 0x6040:16 = 12 bytes
-            # Mode is set via SDO 0x6060, not carried in the PDO.
-            ModePdo(MODE_PP, 0x1601, 10, "tsvb_pp", mode_in_pdo=False),
-            ModePdo(MODE_CSP, 0x1600, 12, "tsvb_csp", mode_in_pdo=False),
+            ModePdo(
+                MODE_PP,
+                0x1601,
+                10,
+                "tsvb_pp",
+                mode_in_pdo=False,
+                rx_fields=(
+                    PdoField(0x607A, 0, 32, PdoRole.TARGET_POSITION),
+                    PdoField(0x60FF, 0, 32, PdoRole.TARGET_VELOCITY),
+                    PdoField(0x6040, 0, 16, PdoRole.CONTROLWORD),
+                ),
+                tx_fields=(
+                    PdoField(0x6064, 0, 32, PdoRole.ACTUAL_POSITION),
+                    PdoField(0x606C, 0, 32, PdoRole.ACTUAL_VELOCITY),
+                    PdoField(0x6041, 0, 16, PdoRole.STATUSWORD),
+                ),
+            ),
+            ModePdo(
+                MODE_CSP,
+                0x1600,
+                12,
+                "tsvb_csp",
+                mode_in_pdo=False,
+                rx_fields=(
+                    PdoField(0x607A, 0, 32, PdoRole.TARGET_POSITION),
+                    PdoField(0x60FF, 0, 32, PdoRole.TARGET_VELOCITY),
+                    PdoField(0x6071, 0, 16, PdoRole.TARGET_TORQUE),
+                    PdoField(0x6040, 0, 16, PdoRole.CONTROLWORD),
+                ),
+                tx_fields=(
+                    PdoField(0x6064, 0, 32, PdoRole.ACTUAL_POSITION),
+                    PdoField(0x606C, 0, 32, PdoRole.ACTUAL_VELOCITY),
+                    PdoField(0x6041, 0, 16, PdoRole.STATUSWORD),
+                ),
+            ),
         ),
         feedback_pdo_layouts=(
-            # TxPDO 0x1A01 as actually mapped by this firmware:
-            # 0x6064:00(32) + 0x606C:00(32) + 0x6041:00(16) = 10 bytes.
+            # Legacy whitelist for probe.py; runtime uses required_feedback_roles.
             (
                 (0x6064, 0, 32),
                 (0x606C, 0, 32),
@@ -433,6 +596,114 @@ def pdo_entry_offset(
             return offset_bits // 8
         offset_bits += bit_length
     return None
+
+
+def layout_role_index(layout: PdoLayout) -> dict[tuple[int, int], int]:
+    """Return ``{(index, subindex): byte_offset}`` for byte-aligned entries.
+
+    Non-byte-aligned entries are omitted; callers must tolerate a missing key.
+    """
+    index_map: dict[tuple[int, int], int] = {}
+    offset_bits = 0
+    for index, subindex, bit_length in layout:
+        if offset_bits % 8 == 0 and bit_length % 8 == 0:
+            index_map[(index, subindex)] = offset_bits // 8
+        offset_bits += bit_length
+    return index_map
+
+
+def required_role_offsets(
+    layout: PdoLayout, required_roles: tuple[PdoRole, ...]
+) -> dict[PdoRole, int]:
+    """Map each required role to its byte offset in the drive-reported layout.
+
+    Raises ``RuntimeError`` listing the missing roles with a precise message.
+    """
+    by_key = layout_role_index(layout)
+    found: dict[PdoRole, int] = {}
+    missing: list[str] = []
+    for role in required_roles:
+        offset = by_key.get((role.index, 0))
+        if offset is None:
+            missing.append(f"0x{role.index:04X}:00 ({role.name})")
+        else:
+            found[role] = offset
+    if missing:
+        raise RuntimeError(
+            "drive TxPDO is missing required feedback field(s): "
+            + ", ".join(missing)
+        )
+    return found
+
+
+def serialize_command(
+    layout: PdoLayout,
+    field_specs: tuple[PdoField, ...],
+    values: dict[PdoRole, int],
+    total_bytes: int | None = None,
+) -> bytearray:
+    """Build a PDO command image from the drive-reported RxPDO layout.
+
+    Walks ``layout`` in PDO order; for each entry that matches a declared
+    ``field_specs`` role present in ``values``, writes the value at its real
+    offset using the entry's bit length and the field's signedness. Entries
+    with no declared role (or whose role is absent from ``values``) are left
+    zero. ``total_bytes`` defaults to the layout's byte size.
+    """
+    if total_bytes is None:
+        total_bytes = pdo_layout_bytes(layout)
+    image = bytearray(total_bytes)
+    specs_by_key = {spec.key: spec for spec in field_specs}
+    offset_bits = 0
+    for index, subindex, bit_length in layout:
+        if offset_bits % 8 or bit_length % 8:
+            offset_bits += bit_length
+            continue
+        spec = specs_by_key.get((index, subindex))
+        if spec is None or spec.role is None or spec.role not in values:
+            offset_bits += bit_length
+            continue
+        offset = offset_bits // 8
+        size = bit_length // 8
+        image[offset : offset + size] = values[spec.role].to_bytes(
+            size, "little", signed=spec.signed
+        )
+        offset_bits += bit_length
+    return image
+
+
+def deserialize_feedback(
+    data: bytes,
+    layout: PdoLayout,
+    field_specs: tuple[PdoField, ...],
+) -> dict[PdoRole, int]:
+    """Decode a PDO feedback image into ``{role: value}`` by field role.
+
+    Walks ``layout`` in PDO order; entries matching a declared ``field_specs``
+    role are read at their real offset. Non-byte-aligned entries and entries
+    with no declared role are skipped.
+    """
+    specs_by_key = {spec.key: spec for spec in field_specs}
+    values: dict[PdoRole, int] = {}
+    offset_bits = 0
+    for index, subindex, bit_length in layout:
+        if offset_bits % 8 or bit_length % 8:
+            offset_bits += bit_length
+            continue
+        spec = specs_by_key.get((index, subindex))
+        if spec is None or spec.role is None:
+            offset_bits += bit_length
+            continue
+        offset = offset_bits // 8
+        size = bit_length // 8
+        if offset + size > len(data):
+            offset_bits += bit_length
+            continue
+        values[spec.role] = int.from_bytes(
+            data[offset : offset + size], "little", signed=spec.signed
+        )
+        offset_bits += bit_length
+    return values
 
 
 def get_welding_profile(vendor: int, product: int) -> WeldingProfile | None:

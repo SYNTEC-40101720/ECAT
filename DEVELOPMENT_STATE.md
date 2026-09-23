@@ -101,12 +101,29 @@
 	`0x603F`，HMI 的 PDO 错误码显示为零不能替代该 SDO 诊断。
 - 驱动重启后现场复测正常，HMI 可进入运行状态并可操作；该记录不替代对
 	`0x821B` 厂商具体含义、外部安全链路及异常复现条件的后续确认。
-
-## 新增凯福驱动扫描结果
-
-- ESI：`ESI/active/凯福/KF_EC2SS3V1.23.xml`
-- 实际设备名：`SSD60N`
-- Vendor/Product/Revision：`0x024B/0x0215/0x0001`
+- 2026-09-23 现场复测：同一型号 DM3C-EC556 实机返回的 TxPDO 0x1A00 变为
+  **16 bytes**，字段顺序 `0x6041(16) + 0x6064(32) + 0x606C(32) + 0x60B9(16) +
+  0x60BA(32)`——比 09-04 记录的 12-byte layout 多了 `0x606C` velocity actual，
+  且 statusword 排到首字节。旧的 `feedback_pdo_layouts` 全等白名单拒绝启动
+  （`unsupported TxPDO 0x1A00 mapping`）。
+- **2026-09-23 底层架构重构（字段驱动 PDO）**：根因是 PDO 字段映射用"枚举
+  具体字节序列的白名单"匹配，固件字段顺序/字段集漂移即失效。重构为字段驱动：
+  - `motion_modes.py` 新增 `PdoRole`（CiA 402 对象语义角色枚举）与 `PdoField`
+    （index/subindex/bits/role）。`ModePdo` 新增 `rx_fields`/`tx_fields` 字段声明。
+  - `device_profiles.py` 新增 `serialize_command`（按驱动实读 RxPDO layout 与
+    role 序列化命令，未声明字段清零）、`deserialize_feedback`（按 role 解码
+    反馈）、`required_role_offsets`（校验必备字段存在并返回偏移）。
+  - `DriveProfile` 新增 `required_feedback_roles`（默认 ACTUAL_POSITION +
+    STATUSWORD）。`_resolve_drive_feedback_mapping` 改为读 TxPDO 实际 layout →
+    校验必备 role 存在 → 保存 layout；缺失才报"missing required feedback
+    field 0xXXXX"，不再"unsupported layout"。`feedback()`/`cycle()` 改为按
+    role 解析/序列化，RxPDO 字段漂移也自适应。
+  - KaiFull 因无实测 RxPDO 字段映射，暂未声明 rx_fields（走硬编码 packet 兜底），
+    但反馈侧仍用 required_feedback_roles 校验。雷赛/TSVB 已按实测声明字段。
+  - 旧 `feedback_pdo_layouts` 白名单保留供 `probe.py` 诊断显示，运行时不再依赖。
+  - 验证：全量 `112 passed`（原 103 + 新增 9 个字段驱动单测），Pylance 无错误。
+  - 收益：未来固件 PDO 字段顺序/字段集漂移，只要仍含必备反馈字段（实际位置 +
+    状态字），无需改代码即可启动；RxPDO 漂移同理自适应。
 - 默认映射：Rx 104 bit、Tx 184 bit；切换到速度映射 `0x1602/0x1A00` 后为 Rx 120 bit、Tx 184 bit
 - Supported Drive Modes：`0x6502 = 0x00A5`，固件声明 PP、PV、IP、CSV；与本地 PDO profile 取交集后 HMI 可用模式为 PV、PP
 - 通过 `ecat-probe --configure-velocity-pdo --cycle-once` 进入 SAFE-OP，零输出 WKC 为 `3`
