@@ -272,6 +272,34 @@ DRIVE_PROFILES = (
             ),
         ),
     ),
+    DriveProfile(
+        "Jiutong TSVB-EA",
+        0x929,
+        0x01,
+        0x1601,
+        0x1A01,
+        10,
+        10,
+        revision=0x00010008,
+        mode_pdos=(
+            # Field 0x6502 on this unit reports 0x3A1 = PP|IP|CSP|CST; PV/HM not
+            # enabled by firmware. Actual PDO mapping (read from the drive):
+            #   0x1601 (PP): 0x607A:32 + 0x60FF:32 + 0x6040:16 = 10 bytes (no mode)
+            #   0x1600 (CSP): 0x607A:32 + 0x60FF:32 + 0x6071:16 + 0x6040:16 = 12 bytes
+            # Mode is set via SDO 0x6060, not carried in the PDO.
+            ModePdo(MODE_PP, 0x1601, 10, "tsvb_pp", mode_in_pdo=False),
+            ModePdo(MODE_CSP, 0x1600, 12, "tsvb_csp", mode_in_pdo=False),
+        ),
+        feedback_pdo_layouts=(
+            # TxPDO 0x1A01 as actually mapped by this firmware:
+            # 0x6064:00(32) + 0x606C:00(32) + 0x6041:00(16) = 10 bytes.
+            (
+                (0x6064, 0, 32),
+                (0x606C, 0, 32),
+                (0x6041, 0, 16),
+            ),
+        ),
+    ),
 )
 
 PROFILES_BY_ID = {

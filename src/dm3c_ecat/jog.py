@@ -17,6 +17,7 @@ from .device_profiles import (
     read_pdo_mapping,
     resolve_default_interface,
 )
+from .motion_modes import MODE_PV
 
 CYCLE_US = 10_000
 MAX_VELOCITY = 100_000
@@ -29,6 +30,28 @@ def output_packet(controlword: int, velocity: int, mode: int = 3) -> bytes:
         + struct.pack("<i", 1000)
         + struct.pack("<b", mode)
     )
+
+
+def tsvb_velocity_packet(controlword: int, velocity: int, mode: int = 3) -> bytes:
+    """Jiutong TSVB-EA RxPDO 0x1601 (PV): mode+controlword+position+velocity+torque+IO_output."""
+    return struct.pack(
+        "<bHiihh",
+        mode,
+        controlword,
+        0,
+        velocity,
+        0,
+        0,
+    )
+
+
+def drive_velocity_packet(
+    profile: DriveProfile, controlword: int, velocity: int
+) -> bytes:
+    mode_pdo = profile.mode_pdo(MODE_PV)
+    if mode_pdo is not None and mode_pdo.packet_kind == "tsvb_velocity":
+        return tsvb_velocity_packet(controlword, velocity, mode=profile.mode)
+    return output_packet(controlword, velocity, mode=profile.mode)
 
 
 def statusword_from_input(slave: object, offset: int = 2) -> int:
@@ -50,10 +73,11 @@ def wait_status(
     value: int,
     mode: int = 3,
     status_offset: int = 2,
+    profile: DriveProfile | None = None,
 ) -> int:
     last_status = 0
     for _ in range(100):
-        slave.output = output_packet(controlword, 0, mode)
+        slave.output = drive_velocity_packet(profile, controlword, 0) if profile else output_packet(controlword, 0, mode)
         master.send_overlap_processdata()
         received = master.receive_processdata(CYCLE_US)
         if received != master.expected_wkc:
@@ -129,7 +153,7 @@ def main() -> int:
             raise RuntimeError(
                 f"unexpected Rx/Tx bytes (expected {profile.rx_bytes}/{expected_tx_bytes})"
             )
-        slave.output = output_packet(0, 0, profile.mode)
+        slave.output = drive_velocity_packet(profile, 0, 0)
         master.send_overlap_processdata()
         if master.receive_processdata(CYCLE_US) != master.expected_wkc:
             raise RuntimeError("initial process-data WKC mismatch")
@@ -140,19 +164,19 @@ def main() -> int:
             raise RuntimeError("drive did not reach OP")
 
         wait_status(
-            master, slave, 0x0006, 0x006F, 0x0021, profile.mode, status_offset
+            master, slave, 0x0006, 0x006F, 0x0021, profile.mode, status_offset, profile
         )
         wait_status(
-            master, slave, 0x0007, 0x006F, 0x0023, profile.mode, status_offset
+            master, slave, 0x0007, 0x006F, 0x0023, profile.mode, status_offset, profile
         )
         wait_status(
-            master, slave, 0x000F, 0x006F, 0x0027, profile.mode, status_offset
+            master, slave, 0x000F, 0x006F, 0x0027, profile.mode, status_offset, profile
         )
 
         print(f"Jogging velocity={args.velocity} for up to {args.seconds:.2f}s")
         deadline = time.monotonic() + args.seconds
         while time.monotonic() < deadline:
-            slave.output = output_packet(0x000F, args.velocity, profile.mode)
+            slave.output = drive_velocity_packet(profile, 0x000F, args.velocity)
             master.send_overlap_processdata()
             received = master.receive_processdata(CYCLE_US)
             if received != master.expected_wkc:
@@ -165,7 +189,11 @@ def main() -> int:
     finally:
         if slave is not None:
             try:
-                slave.output = output_packet(0x0006, 0, profile.mode if profile else 3)
+                slave.output = (
+                    drive_velocity_packet(profile, 0x0006, 0)
+                    if profile
+                    else output_packet(0x0006, 0, 3)
+                )
                 master.send_overlap_processdata()
                 master.receive_processdata(CYCLE_US)
             except Exception:

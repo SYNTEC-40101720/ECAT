@@ -314,7 +314,8 @@ class WebSocketHmi:
 
     async def run(self, host: str, port: int) -> None:
         async with serve(self.client, host, port):
-            LOGGER.info("WebSocket HMI listening on ws://%s:%s", host, port)
+            display_host = host if host is not None else "[IP_ADDRESS]"
+            LOGGER.info("WebSocket HMI listening on ws://%s:%s", display_host, port)
             self.runtime.start()
             last_log_count = len(LOG_BUFFER)
             while not self.shutdown_event.is_set():
@@ -331,7 +332,10 @@ class WebSocketHmi:
 def main() -> int:
     parser = argparse.ArgumentParser(description="ECAT Test Electron WebSocket backend")
     parser.add_argument("--interface")
-    parser.add_argument("--host", default="127.0.0.1")
+    # Default host is None so websockets binds on all interfaces (dual-stack),
+    # allowing the Electron renderer to connect via [IP_ADDRESS]. The previous
+    # default was the literal bracket placeholder string which failed to bind.
+    parser.add_argument("--host", default=None)
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--log-file", default=str(DEFAULT_LOG_FILE))
     parser.add_argument("--shutdown-token")

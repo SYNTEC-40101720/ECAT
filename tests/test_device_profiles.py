@@ -55,9 +55,10 @@ def test_explicit_interface_overrides_adapter_detection(monkeypatch):
 
 
 def test_drive_profiles_expose_only_mapped_motion_modes():
+    standard_profiles = device_profiles.DRIVE_PROFILES[:2]
     assert all(
         profile.supported_modes == (MODE_PV, MODE_PP, MODE_HM, MODE_CSP)
-        for profile in device_profiles.DRIVE_PROFILES
+        for profile in standard_profiles
     )
 
 
@@ -74,13 +75,44 @@ def test_drive_profile_rejects_unknown_revision():
 
 
 def test_csp_and_homing_profile_process_image_lengths():
-    dm3c, kaifull = device_profiles.DRIVE_PROFILES
+    dm3c, kaifull = device_profiles.DRIVE_PROFILES[:2]
 
     assert dm3c.mode_pdo(MODE_HM).rx_bytes == 20
     assert kaifull.mode_pdo(MODE_HM).rx_bytes == 20
     assert dm3c.mode_pdo(MODE_CSP).rx_bytes == 8
     assert kaifull.mode_pdo(MODE_CSP).rx_bytes == 13
     assert kaifull.mode_pdo(MODE_CSP).target_velocity_in_pdo is True
+
+
+def test_tsvb_ea_profile_matches_esi_process_image():
+    profile = next(
+        p for p in device_profiles.DRIVE_PROFILES if p.vendor == 0x929 and p.product == 0x01
+    )
+    assert profile.name == "Jiutong TSVB-EA"
+    assert profile.revision == 0x00010008
+    assert profile.rx_pdo == 0x1601
+    assert profile.tx_pdo == 0x1A01
+    assert profile.rx_bytes == 10
+    assert profile.tx_bytes == 10
+    # Field 0x6502 reports PP|IP|CSP|CST; PV/HM not enabled by firmware.
+    # Actual PDO mapping: 0x1601 (PP) = 10 bytes, 0x1600 (CSP) = 12 bytes, no mode byte.
+    assert profile.mode_pdo(MODE_PP).rx_pdo == 0x1601
+    assert profile.mode_pdo(MODE_PP).rx_bytes == 10
+    assert profile.mode_pdo(MODE_PP).mode_in_pdo is False
+    assert profile.mode_pdo(MODE_PP).packet_kind == "tsvb_pp"
+    assert profile.mode_pdo(MODE_CSP).rx_pdo == 0x1600
+    assert profile.mode_pdo(MODE_CSP).rx_bytes == 12
+    assert profile.mode_pdo(MODE_CSP).mode_in_pdo is False
+    assert profile.mode_pdo(MODE_CSP).packet_kind == "tsvb_csp"
+    assert profile.supported_modes == (MODE_PP, MODE_CSP)
+    # TxPDO 0x1A01 as actually mapped by firmware: position+velocity+statusword = 10 bytes
+    expected_layout = (
+        (0x6064, 0, 32),
+        (0x606C, 0, 32),
+        (0x6041, 0, 16),
+    )
+    assert expected_layout in profile.feedback_pdo_layouts
+    assert device_profiles.pdo_layout_bytes(expected_layout) == 10
 
 
 def test_dm3c_profile_matches_observed_feedback_layout():

@@ -155,6 +155,48 @@ def homing_packet(
     )
 
 
+def tsvb_pp_packet(
+    controlword: int,
+    target_position: int,
+    velocity: int,
+    mode: int = 1,
+    io_output: int = 0,
+) -> bytes:
+    """Jiutong TSVB-EA RxPDO 0x1601 (PP, actual firmware mapping):
+    target_position(4) + velocity(4) + controlword(2) = 10 bytes. Mode via SDO 0x6060."""
+    return struct.pack("<iiH", target_position, velocity, controlword)
+
+
+def tsvb_homing_packet(
+    controlword: int,
+    mode: int = 6,
+    io_output: int = 0,
+) -> bytes:
+    """Jiutong TSVB-EA RxPDO 0x1601 used for Homing: homing parameters via SDO."""
+    return struct.pack("<iiH", 0, 0, controlword)
+
+
+def tsvb_csp_packet(
+    controlword: int,
+    target_position: int,
+    target_velocity: int = 0,
+    mode: int = 8,
+) -> bytes:
+    """Jiutong TSVB-EA RxPDO 0x1600 (CSP, actual firmware mapping):
+    target_position(4) + velocity(4) + torque(2) + controlword(2) = 12 bytes."""
+    return struct.pack("<iihH", target_position, target_velocity, 0, controlword)
+
+
+def tsvb_velocity_packet(
+    controlword: int,
+    velocity: int,
+    mode: int = 3,
+    io_output: int = 0,
+) -> bytes:
+    """Jiutong TSVB-EA RxPDO 0x1601 (PV, when enabled): position+velocity+controlword."""
+    return struct.pack("<iiH", 0, velocity, controlword)
+
+
 class Runtime:
     def __init__(self, interface: str | None) -> None:
         self.interface = interface
@@ -1376,6 +1418,65 @@ class Runtime:
         self.drive_feedback_mapping = mapping
         self.drive_tx_bytes = pdo_layout_bytes(mapping)
 
+    def _tsvb_write_pp_sdo(
+        self,
+        profile_velocity: int,
+        acceleration: int,
+        deceleration: int,
+        *,
+        relative: bool,
+    ) -> None:
+        """Write Jiutong TSVB-EA PP ramp parameters via SDO (not in PDO)."""
+        drive_slave = self._drive_device()
+        if drive_slave is None:
+            raise RuntimeError("drive process data is not configured")
+        try:
+            drive_slave.sdo_write(0x6081, 0, profile_velocity.to_bytes(4, "little", signed=True))
+            drive_slave.sdo_write(0x6083, 0, acceleration.to_bytes(4, "little", signed=True))
+            drive_slave.sdo_write(0x6084, 0, deceleration.to_bytes(4, "little", signed=True))
+            if relative:
+                drive_slave.sdo_write(0x6074, 0, (0).to_bytes(4, "little", signed=True))
+            LOGGER.info(
+                "TSVB PP SDO written: profile_velocity=%s acceleration=%s deceleration=%s relative=%s",
+                profile_velocity,
+                acceleration,
+                deceleration,
+                relative,
+            )
+        except Exception as exc:
+            self._latch_runtime_error(f"TSVB PP SDO write failed: {exc}")
+            raise
+
+    def _tsvb_write_homing_sdo(
+        self,
+        method: int,
+        fast_velocity: int,
+        slow_velocity: int,
+        acceleration: int,
+        offset: int,
+    ) -> None:
+        """Write Jiutong TSVB-EA Homing parameters via SDO (not in PDO)."""
+        drive_slave = self._drive_device()
+        if drive_slave is None:
+            raise RuntimeError("drive process data is not configured")
+        try:
+            drive_slave.sdo_write(0x6098, 0, method.to_bytes(1, "little", signed=True))
+            drive_slave.sdo_write(0x6099, 1, fast_velocity.to_bytes(4, "little", signed=True))
+            drive_slave.sdo_write(0x6099, 2, slow_velocity.to_bytes(4, "little", signed=True))
+            drive_slave.sdo_write(0x609A, 0, acceleration.to_bytes(4, "little", signed=True))
+            drive_slave.sdo_write(0x607C, 0, offset.to_bytes(4, "little", signed=True))
+            LOGGER.info(
+                "TSVB Homing SDO written: method=%s fast=%s slow=%s acceleration=%s offset=%s",
+                method,
+                fast_velocity,
+                slow_velocity,
+                acceleration,
+                offset,
+            )
+        except Exception as exc:
+            self._latch_runtime_error(f"TSVB Homing SDO write failed: {exc}")
+            raise
+
     def _process_wkc_is_valid(self, *, pure_io: bool = False) -> bool:
         if (
             pure_io
@@ -1744,6 +1845,47 @@ class Runtime:
                 offset,
                 mode_value,
             )
+        elif packet_kind == "tsvb_velocity":
+            with self.lock:
+                io_output = self.io_output_mask if self.io_profile is None else 0
+            drive_slave.output = tsvb_velocity_packet(
+                controlword, velocity, mode=mode_value, io_output=io_output
+            )
+        elif packet_kind == "tsvb_pp":
+            with self.lock:
+                target_position = self.pp_target_position
+                profile_velocity = self.pp_profile_velocity
+                io_output = self.io_output_mask if self.io_profile is None else 0
+            drive_slave.output = tsvb_pp_packet(
+                controlword,
+                target_position,
+                profile_velocity,
+                mode=mode_value,
+                io_output=io_output,
+            )
+        elif packet_kind == "tsvb_homing":
+            with self.lock:
+                if self.homing_pending:
+                    self.homing_pending = False
+                    self.homing_active = True
+                    self.message = "Homing running"
+                homing_active = self.homing_active
+                io_output = self.io_output_mask if self.io_profile is None else 0
+            if homing_active:
+                controlword |= HOMING_START
+            drive_slave.output = tsvb_homing_packet(
+                controlword, mode=mode_value, io_output=io_output
+            )
+        elif packet_kind == "tsvb_csp":
+            target_position = self._next_csp_target()
+            with self.lock:
+                self.csp_command_position = target_position
+            drive_slave.output = tsvb_csp_packet(
+                controlword,
+                target_position,
+                target_velocity=0,
+                mode=mode_value,
+            )
         elif packet_kind == "csp":
             target_position = self._next_csp_target()
             with self.lock:
@@ -2065,6 +2207,16 @@ class Runtime:
                 self._prepare_io_modules()
             self._validate_welding_process_data()
             self._read_mode_capabilities()
+            available = self.available_modes()
+            if self.motion_mode not in available and available:
+                previous = self.motion_mode
+                self.motion_mode = available[0]
+                LOGGER.info(
+                    "Default mode %s unavailable on %s; using %s",
+                    previous.upper(),
+                    self.profile.name,
+                    self.motion_mode.upper(),
+                )
             self.configure_process_data(self.motion_mode)
             if self.io_profile is not None:
                 self._validate_io_process_data()
@@ -2246,6 +2398,22 @@ class Runtime:
                         pp_trigger = self.pp_trigger
                         pp_relative = self.pp_relative
                         pp_halted = self.pp_halted
+                        pp_target_position = self.pp_target_position
+                        pp_profile_velocity = self.pp_profile_velocity
+                        pp_acceleration = self.pp_acceleration
+                        pp_deceleration = self.pp_deceleration
+                    if (
+                        pp_trigger
+                        and self.profile is not None
+                        and self.profile.mode_pdo(MODE_PP) is not None
+                        and self.profile.mode_pdo(MODE_PP).packet_kind == "tsvb_pp"
+                    ):
+                        self._tsvb_write_pp_sdo(
+                            pp_profile_velocity,
+                            pp_acceleration,
+                            pp_deceleration,
+                            relative=pp_relative,
+                        )
                     controlword = 0x000F
                     if pp_halted:
                         controlword |= PP_HALT
@@ -2262,6 +2430,25 @@ class Runtime:
                 elif motion_mode == MODE_HM:
                     with self.lock:
                         homing_running = self.homing_pending or self.homing_active
+                        hm_method = self.homing_method
+                        hm_fast = self.homing_fast_velocity
+                        hm_slow = self.homing_slow_velocity
+                        hm_accel = self.homing_acceleration
+                        hm_offset = self.homing_offset
+                    if (
+                        homing_running
+                        and self.profile is not None
+                        and self.profile.mode_pdo(MODE_HM) is not None
+                        and self.profile.mode_pdo(MODE_HM).packet_kind == "tsvb_homing"
+                        and self.homing_pending
+                    ):
+                        self._tsvb_write_homing_sdo(
+                            hm_method,
+                            hm_fast,
+                            hm_slow,
+                            hm_accel,
+                            hm_offset,
+                        )
                     controlword = 0x000F
                     if not homing_running:
                         controlword |= PP_HALT
