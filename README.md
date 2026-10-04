@@ -1,7 +1,24 @@
 # ECAT Test
 
-通用 EtherCAT 测试工具：Python/`pysoem` Runtime + Electron 桌面 HMI + 本机 WebSocket。
-控制命令只通过 Electron WebSocket 网关发送；旧 `ecat-hmi` HTTP/SSE 入口已移除。
+通用 EtherCAT 测试工具：Python/`pysoem` Runtime + 本地 Web 桌面 HMI（FastAPI + React + WebView2）+ 本机 WebSocket。
+控制命令只通过桌面后端 WebSocket 网关发送；旧 `ecat-hmi` HTTP/SSE 入口已移除。
+
+## 桌面架构（2026-10 L9 迁移）
+
+单 Python 进程内嵌 FastAPI（uvicorn 线程，默认只绑 `localhost`），UI 为
+`webui/`（React + TypeScript + Vite）编译产物，窗口由系统 WebView2 渲染，
+不随包携带 Chromium。替代原 Electron 双进程方案：
+
+- `ecat-desktop`：桌面入口（`src/dm3c_ecat/desktop/cli.py`）；`--no-window` 为无头/浏览器态
+- 启动器 `src/dm3c_ecat/desktop/launcher.py`：随机回环端口、一次性令牌注入启动 URL、
+  `/api/v1/system/health` 就绪探活、窗口关闭 → Runtime 安全停止 → uvicorn 退出
+- WS 端点 `/api/v1/events`：快照/日志广播（0.2s 周期）、单控制客户端所有权、
+  严格 JSON 命令校验（`desktop/schemas.py` + `desktop/gateway.py`）
+- 前端契约层：`webui/src/api/types.ts` 是 `Runtime.snapshot()` 的镜像，改后端字段先同步它
+- 安全门控纯函数集中在 `webui/src/logic/gates.ts`（canEnable/canJog/canMovePp 等）
+
+开发态：终端 1 `uvicorn`（或 `ecat-desktop --no-window`），终端 2 `cd webui && npm run dev`
+（Vite 5173 热更新）。桌面态发布验证：`py -m dm3c_ecat.desktop.cli`。
 
 ## 安装
 
@@ -11,7 +28,7 @@ py -m pip install --editable .
 
 确认 Npcap 已安装，并确保没有其他 EtherCAT 主站进程占用同一网卡。
 
-桌面 UI 不再使用 PySide6。真实 EtherCAT 操作前必须确认 Npcap、网卡占用、急停、STO、
+桌面 UI 不再使用 PySide6 或 Electron。真实 EtherCAT 操作前必须确认 Npcap、网卡占用、急停、STO、
 限位和机械安全条件；自动化测试不等于硬件验收。
 
 程序日志默认写入 `logs/ecat-test.log`，同时输出到控制台。日志包含网卡打开、
@@ -21,42 +38,42 @@ PDO/OP 配置、使能序列、Jog、心跳看门狗、WKC 和异常堆栈。
 
 ```powershell
 py -m pip install --editable .
-npm install
-py start_ecat_test.py
+cd webui && npm install && npm run build && cd ..
+py -m dm3c_ecat.desktop.cli
 ```
 
 启动时会枚举 Npcap 网卡并过滤 WAN Miniport、Wi-Fi、蓝牙、VPN、虚拟和回环接口。
-只有一个物理网卡时自动使用它；存在多个物理网卡时，Electron HMI 会等待在网卡面板中选择。
+只有一个物理网卡时自动使用它；存在多个物理网卡时，HMI 会在设置面板的网卡列表中选择。
 未选定网卡不会启动 EtherCAT 实时线程。网卡只能在驱动未使能且没有运动命令时切换。
 
-也可以直接使用 `npm start`。显式指定 EtherCAT 网卡：
+显式指定 EtherCAT 网卡：
 
 ```powershell
-py start_ecat_test.py --interface "\Device\NPF_{网卡 GUID}"
+py -m dm3c_ecat.desktop.cli --interface "\Device\NPF_{网卡 GUID}"
 ```
 
 `--interface` 和环境变量 `ECAT_INTERFACE` 都会覆盖自动探测；显式接口无效时会在运行状态中报告错误。
 
 ## SYNTEC 发布
 
-发布默认使用产品名 `SYNTEC-ECAT-Test`、版本 `1.0.0.0`、目标 `win-x64` 和目录
+发布默认使用产品名 `SYNTEC-ECAT-Test`、版本 `1.0.0`、目标 `win-x64` 和目录
 `D:\Release\SYNTEC-ECAT-Test`；这些参数仍需用户在域控安装前复核。构建路径应保持纯英文且无空格。
 
 ```powershell
-npm install
-py -m pip install -r packaging\requirements-build.txt
-npm run build:backend
-npm run build:release
-npm run validate:release
+cd webui && npm install && npm run build && cd ..
+py -m pip install -r packaging/requirements-build.txt
+py -m PyInstaller --noconfirm --clean --distpath build\desktop-dist --workpath build\desktop-work packaging\desktop.spec
 ```
 
-Python 后端由 PyInstaller 生成 one-dir、windowed、`--noupx` 自包含目录；Electron packaged
-模式从 `resources\backend` 启动它，不依赖目标机 Python。域控签名、白名单、安装升级卸载和
-当前后端构建和产物验证已完成；本次 Electron 安装包因下载 Electron `38.8.6` 网络超时未完成，默认产品名、版本、输出目录仍需用户复核，域控安装验收未完成。真实 EtherCAT/安全链路仍需现场验收。
+桌面应用由 PyInstaller 生成 one-dir、windowed、`--noupx` 自包含目录
+（`build\desktop-dist\SYNTEC-ECAT-Test\SYNTEC-ECAT-Test.exe`），携带 `webui/dist`、
+`ESI/active` 和 WebView2 互操作库，不依赖目标机 Python；窗口使用系统 WebView2 Runtime。
+域控签名、白名单、安装升级卸载验收仍未完成。真实 EtherCAT/安全链路仍需现场验收。
 
-两种启动方式都进入同一 Electron 流程：主进程启动
-`dm3c_ecat.websocket_hmi`，等待 `ws://127.0.0.1:8765` ready 握手后加载页面；关闭窗口
-先请求后端安全退出，2.5 秒超时才强制终止。无需单独启动 Python WebSocket 或浏览器。
+启动流程：`ecat-desktop` 随机选回环端口并生成一次性令牌，uvicorn 线程就绪后打开
+WebView2 窗口；关闭窗口先执行 Runtime 安全停止（含最终安全帧），再退出 uvicorn。
+无需单独启动 Python WebSocket 或浏览器。历史 Electron 链路（`npm run build:release`）
+已由本桌面链路替代，`electron/` 目录保留仅作参考。
 
 ## 诊断与测试
 
@@ -90,17 +107,16 @@ ecat-jog <velocity-in-drive-units> <seconds> --confirm-jog
 本地验证命令：
 
 ```powershell
-npm test
 python -m pytest -q
 python -m compileall -q src tests start_ecat_test.py
-node --check electron/main.cjs
-node --check electron/backend_lifecycle.cjs
-node --check src/dm3c_ecat/web/app.js
+cd webui && npm run typecheck && cd ..
 python -m pip check
 git diff --check
 ```
 
-当前最终基线：Python全量 `98 passed`，Node `6 passed`。Electron 安装包两次构建均因下载超时未完成。
+当前最终基线：Python 全量 `124 passed`（含 desktop 包 12 项）、前端 vitest `15 passed`。
+历史 Electron 链路的 Node 测试（`npm test`，6 项）在迁移前仍通过；`electron/` 目录
+退役后该测试不再属于发布链路。
 
 命令行工具在只有一个物理网卡时自动选择；多网卡或没有物理网卡时请把接口名作为位置参数传入。
 命令行 Jog 最长 10 秒，退出或中断时发送零速度并禁能。
@@ -196,16 +212,21 @@ ESI 文件用于描述设备，不会被 `pysoem` 自动从 `ESI/` 目录加载�
 
 ```powershell
 $env:ECAT_INTERFACE = '\Device\NPF_{网卡 GUID}'
-npm start
+py -m dm3c_ecat.desktop.cli
 ```
 
 ## 文件说明
 
 - `src/dm3c_ecat/logging_setup.py`：日志配置和滚动文件处理
-- `src/dm3c_ecat/hmi.py`：浏览器 HMI 和实时周期主站
-- `src/dm3c_ecat/websocket_hmi.py`：Electron 使用的 Python WebSocket 网关
-- `electron/main.cjs`：Electron 主进程和 Python 后端生命周期管理
-- `electron/backend_lifecycle.cjs`：后端启动握手、优雅关闭和超时强杀
+- `src/dm3c_ecat/hmi.py`：实时周期主站（Runtime）
+- `src/dm3c_ecat/desktop/cli.py`：桌面入口 `ecat-desktop`（含 `--no-window` 无头模式）
+- `src/dm3c_ecat/desktop/launcher.py`：随机回环端口、一次性令牌、uvicorn 线程与关闭顺序
+- `src/dm3c_ecat/desktop/app.py`：FastAPI 应用（WS `/api/v1/events`、健康检查、静态托管）
+- `src/dm3c_ecat/desktop/gateway.py`：命令校验与 Runtime 分发（单控制客户端所有权）
+- `src/dm3c_ecat/desktop/schemas.py`：严格 JSON 类型校验原语
+- `webui/src/`：React + TypeScript 前端（契约层 `api/types.ts`、门控 `logic/gates.ts`）
+- `src/dm3c_ecat/websocket_hmi.py`：旧 Electron 网关（保留参考，退役）
+- `electron/`：旧 Electron 主进程（保留参考，退役）
 - `src/dm3c_ecat/probe.py`：扫描、PDO 检查和 SAFE-OP 验证
 - `src/dm3c_ecat/jog.py`：受限命令行 Jog 备用工具
 - `pyproject.toml`：标准 Python 包配置和命令入口

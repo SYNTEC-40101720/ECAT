@@ -1,56 +1,31 @@
+"""Start the SYNTEC ECAT Test desktop HMI.
+
+Thin wrapper: prefers the packaged backend entry (dm3c_ecat.desktop.cli) when
+the package is importable; falls back to running the module from the repo so
+the launcher works in a source checkout without an install step.
+
+Usage:
+    py start_ecat_test.py [--interface \\Device\\NPF_{GUID}] [--no-window]
+"""
+
 from __future__ import annotations
 
-import argparse
 import os
-import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 
-def find_npm() -> str | None:
-    candidates = ("npm.cmd", "npm") if os.name == "nt" else ("npm",)
-    for candidate in candidates:
-        executable = shutil.which(candidate)
-        if executable:
-            return executable
-    return None
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Start the ECAT Test Electron HMI and Python WebSocket backend."
-    )
-    parser.add_argument(
-        "--interface",
-        help="EtherCAT adapter name; overrides the ECAT_INTERFACE environment variable.",
-    )
-    return parser.parse_args()
-
-
 def main() -> int:
-    args = parse_args()
-    npm = find_npm()
-    if npm is None:
-        print("[ERROR] npm was not found. Please install Node.js first.")
-        return 1
-
-    environment = os.environ.copy()
-    if args.interface:
-        environment["ECAT_INTERFACE"] = args.interface
-
-    print("Starting ECAT Test Electron HMI...")
+    args = [sys.executable, "-m", "dm3c_ecat.desktop.cli", *sys.argv[1:]]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(PROJECT_ROOT / "src") + os.pathsep + env.get("PYTHONPATH", "")
     try:
-        completed = subprocess.run(
-            [npm, "start"],
-            cwd=PROJECT_ROOT,
-            env=environment,
-            check=False,
-        )
+        return subprocess.run(args, cwd=PROJECT_ROOT, env=env, check=False).returncode
     except KeyboardInterrupt:
         return 130
-    return completed.returncode
 
 
 if __name__ == "__main__":

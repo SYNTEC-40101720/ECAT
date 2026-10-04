@@ -11,6 +11,7 @@ build/
 dist/
 release/
 out/
+webui/dist/
 
 # Local runtime output
 logs/*.log*
@@ -19,3 +20,4 @@ logs/*.log*
 .env
 .env.*
 !.env.example
+webui/tsconfig.tsbuildinfo

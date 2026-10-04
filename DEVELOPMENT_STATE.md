@@ -32,7 +32,39 @@
 	安装包和 packaged GUI 烟雾测试未完成。域控最终安装、签名/白名单和真实设备验收仍待用户。
 # ECAT Test 开发状态
 
-最后更新：2026-09-04
+最后更新：2026-10-04
+
+## L9 本地 Web 桌面迁移（2026-10-04）
+
+- 架构从 Electron 双进程迁移为单 Python 进程本地 Web 桌面：FastAPI（uvicorn 线程）+
+  React/TS/Vite 前端（`webui/`）+ 系统 WebView2 窗口（pywebview，`gui="edgechromium"`）。
+- 新增 `src/dm3c_ecat/desktop/`：`cli.py`（`ecat-desktop` 入口）、`launcher.py`
+  （随机回环端口、一次性令牌、/health 探活、窗口关闭→Runtime 安全停止→uvicorn 退出的
+  关闭顺序）、`app.py`（WS `/api/v1/events` + 0.2s 快照/日志泵 + 静态托管 webui/dist）、
+  `gateway.py`（命令校验与分发、单控制客户端所有权）、`schemas.py`（严格 JSON 类型校验）。
+- 修复初审发现 1：新网关默认只绑 `localhost`（旧 `websocket_hmi.py` 绑定所有接口）。
+- 命令集与旧 WS 协议逐项等价（move_pp/start_homing/move_csp/set_welding_command 等全部
+  参数与校验语义保持），由 `tests/test_desktop.py` 11 项覆盖；旧 `websocket_hmi.py` 与
+  `electron/` 保留为参考，不再属于运行链路。
+- 前端：`webui/src/api/types.ts` 是 `Runtime.snapshot()` 的契约镜像；安全门控布尔
+  （canEnable/canJog/canMovePp/canHome/canMoveCsp/canStartWelding 等）集中于纯函数
+  `webui/src/logic/gates.ts`；Jog 120ms 重发定时器在页面失焦/隐藏时本地先掐断再依赖
+  后端 0.35s 心跳看门狗。`tsc -b` 零错误，Vite 构建无警告。
+- 发布链路：`packaging/desktop.spec`（PyInstaller one-dir、windowed、--noupx）携带
+  `webui/dist`、`ESI/active`、webview 平台模块与 uvicorn 子模块 hiddenimports；
+  产物 `build/desktop-dist/SYNTEC-ECAT-Test/`（约 50 MB，无 Chromium 下载依赖）。
+- 已验证（软件）：全量 pytest `124 passed`（原 112 + desktop 12，新增 1 项回归锁死
+  `start_server` 必须装配 `gateway.shutdown_token`——2026-10-04 实机冒烟发现浏览器态
+  WS `shutdown` 永远 "not authorized" 的装配遗漏，修复为关闭令牌与连接令牌同源）；
+  `tsc -b` 通过；Vite build 通过；前端 vitest `15 passed`；headless E2E（uvicorn+WS
+  命令流+快照泵+shutdown 令牌）通过；PyInstaller 产物实机 headless 启动探活
+  （health 200、WS shutdown 干净退出 exit 0、无网卡时进入 WAITING_INTERFACE）通过。
+- 尚未验证（实机边界，沿用安全纪律）：WebView2 窗口真实渲染与关窗时安全帧送达
+  （需在带网卡的机器上跑 `ecat-desktop` 实测）；窗口最小化/失焦后心跳节流行为与
+  Electron 一致性；真实驱动/I/O/焊机上的完整 HMI 操作；域控安装、签名、白名单与
+  WebView2 Runtime 可用性；`--no-window` 浏览器态的多客户端行为。
+- 历史问题处置：Electron 38.8.6 下载超时导致 L8 安装包缺失的问题随 Electron 链路
+  退役而不再存在；域控验收仍待用户执行。
 
 ## 最终收尾状态（2026-08-26）
 
