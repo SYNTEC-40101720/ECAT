@@ -56,6 +56,11 @@ def main() -> int:
     static_dir = _static_dir()
     interface = args.interface or resolve_default_interface()
     runtime = Runtime(interface)
+    # 桌面路径必须显式启动 Runtime 线程：select_interface 命令只在网卡
+    # 切换时调用 start()，单网卡自动选择的常见配置下若无人启动，循环
+    # 线程永不运行、状态卡在 STARTING。interface 为 None 时 start() 会
+    # 置 WAITING_INTERFACE 等待用户选择网卡。
+    runtime.start()
     gateway = ControlGateway(runtime)
     logging.getLogger("ecat_test.desktop").info(
         "ecat-desktop %s starting (window=%s, static=%s)",

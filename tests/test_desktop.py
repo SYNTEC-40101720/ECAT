@@ -242,3 +242,51 @@ def test_create_app_health_and_app_factory(tmp_path):
     assert "/api/v1/system/health" in routes
     assert "/api/v1/events" in routes
     assert any(getattr(route, "name", "") == "webui" for route in app.routes)
+
+
+def test_cli_main_starts_runtime_thread(monkeypatch, tmp_path):
+    """桌面路径必须显式启动 Runtime 线程（P0 回归测试）。
+
+    单网卡自动选择是最常见配置：若 cli.main 只构造 Runtime 而不调用
+    start()，循环线程永不运行、状态卡在 STARTING。interface 为 None 时
+    start() 负责置 WAITING_INTERFACE。
+    """
+    from dm3c_ecat.desktop import cli
+
+    class FakeRuntime:
+        def __init__(self, interface):
+            self.interface = interface
+            self.start_calls = 0
+
+        def start(self):
+            self.start_calls += 1
+
+        def snapshot(self):
+            return {"state": "WAITING_INTERFACE"}
+
+    monkeypatch.setattr(cli, "_static_dir", lambda: None)
+    monkeypatch.setattr(cli, "resolve_default_interface", lambda: "fake-iface")
+    monkeypatch.setattr(cli, "configure_logging", lambda log_file: tmp_path / "log")
+    created: list[FakeRuntime] = []
+    original_init = FakeRuntime.__init__
+
+    def recording_init(self, interface):
+        original_init(self, interface)
+        created.append(self)
+
+    FakeRuntime.__init__ = recording_init
+    monkeypatch.setattr(cli, "Runtime", FakeRuntime)
+
+    monkeypatch.setattr(
+        cli, "run_desktop", lambda gateway, static_dir, *, open_window: 0
+    )
+
+    # cli.main 无参调用：--no-window 等默认参数由 argparse 填充。
+    import sys
+
+    monkeypatch.setattr(sys, "argv", ["ecat-desktop"])
+    exit_code = cli.main()
+
+    assert exit_code == 0
+    assert len(created) == 1
+    assert created[0].start_calls == 1
