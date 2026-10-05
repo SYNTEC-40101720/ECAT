@@ -14,11 +14,11 @@ from .device_profiles import (
     get_remote_io_profile,
     get_welding_profile,
     initialize_remote_io_modules,
-    is_tolerated_mapping_error,
     pdo_layout_bytes,
     read_pdo_mapping,
-    resolve_remote_io_profile,
     resolve_default_interface,
+    resolve_remote_io_profile,
+    tolerated_map_size,
 )
 
 
@@ -75,27 +75,30 @@ def map_process_data(
     overlap: bool,
     io_entries: list[tuple[int, object, RemoteIoProfile]],
 ) -> int:
+    # 共享容忍实现（device_profiles.tolerated_map_size）：全部 SDO 错误
+    # 被 profile 的 tolerated_mapping_sdo_errors 命中即跳过驱动侧映射
+    # 写入。probe 侧多从站时逐个尝试，命中一个即返回。
+    def _try(profile: RemoteIoProfile, index: int) -> int | None:
+        try:
+            return tolerated_map_size(
+                master,
+                overlap=overlap,
+                tolerated_slave=(profile, index),
+            )
+        except pysoem.ConfigMapError:
+            return None
+
+    for index, _slave, profile in io_entries:
+        mapped_size = _try(profile, index)
+        if mapped_size is not None:
+            print(
+                f"WARNING: ignoring known fixed-PDO mapping SDO error for "
+                f"{profile.name} at slave {index}; mapped process image is "
+                f"{mapped_size} bytes."
+            )
+            return mapped_size
     mapper = master.config_overlap_map if overlap else master.config_map
-    try:
-        return mapper()
-    except pysoem.ConfigMapError as exc:
-        errors = getattr(exc, "error_list", ())
-        for index, _slave, profile in io_entries:
-            if errors and all(
-                is_tolerated_mapping_error(error, profile, index)
-                for error in errors
-            ):
-                mapped_size = sum(
-                    len(candidate.output) + len(candidate.input)
-                    for candidate in master.slaves
-                )
-                print(
-                    f"WARNING: ignoring known fixed-PDO mapping SDO error for "
-                    f"{profile.name} at slave {index}; mapped process image is "
-                    f"{mapped_size} bytes."
-                )
-                return mapped_size
-        raise
+    return mapper()
 
 
 def main() -> int:

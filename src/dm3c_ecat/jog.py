@@ -17,7 +17,7 @@ from .device_profiles import (
     read_pdo_mapping,
     resolve_default_interface,
 )
-from .motion_modes import MODE_PV, PdoRole
+from .motion_modes import PdoRole
 
 CYCLE_US = 10_000
 MAX_VELOCITY = 100_000
@@ -32,25 +32,11 @@ def output_packet(controlword: int, velocity: int, mode: int = 3) -> bytes:
     )
 
 
-def tsvb_velocity_packet(controlword: int, velocity: int, mode: int = 3) -> bytes:
-    """Jiutong TSVB-EA RxPDO 0x1601 (PV): mode+controlword+position+velocity+torque+IO_output."""
-    return struct.pack(
-        "<bHiihh",
-        mode,
-        controlword,
-        0,
-        velocity,
-        0,
-        0,
-    )
-
-
 def drive_velocity_packet(
     profile: DriveProfile, controlword: int, velocity: int
 ) -> bytes:
-    mode_pdo = profile.mode_pdo(MODE_PV)
-    if mode_pdo is not None and mode_pdo.packet_kind == "tsvb_velocity":
-        return tsvb_velocity_packet(controlword, velocity, mode=profile.mode)
+    # TSVB-EA 的 PV 模式未被固件开放（0x6502 无 PV 位），jog 不支持该
+    # 驱动；此函数只为声明 PV 的驱动（如 DM3C）服务，走固定布局包。
     return output_packet(controlword, velocity, mode=profile.mode)
 
 
@@ -59,10 +45,6 @@ def statusword_from_input(slave: object, offset: int = 2) -> int:
     if offset < 0 or len(feedback) < offset + 2:
         return 0
     return int.from_bytes(feedback[offset : offset + 2], "little")
-
-
-def statusword_from_overlap_output(slave: object, offset: int = 2) -> int:
-    return statusword_from_input(slave, offset)
 
 
 def wait_status(

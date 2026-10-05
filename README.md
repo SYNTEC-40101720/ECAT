@@ -31,7 +31,7 @@ py -m pip install --editable .
 桌面 UI 不再使用 PySide6 或 Electron。真实 EtherCAT 操作前必须确认 Npcap、网卡占用、急停、STO、
 限位和机械安全条件；自动化测试不等于硬件验收。
 
-程序日志默认写入 `logs/ecat-test.log`，同时输出到控制台。日志包含网卡打开、
+程序日志默认写入 `%LOCALAPPDATA%\SYNTEC-ECAT-Test\logs\ecat-test.log`，同时输出到控制台。日志包含网卡打开、
 PDO/OP 配置、使能序列、Jog、心跳看门狗、WKC 和异常堆栈。
 
 ## 安装与启动
@@ -72,8 +72,9 @@ py -m PyInstaller --noconfirm --clean --distpath build\desktop-dist --workpath b
 
 启动流程：`ecat-desktop` 随机选回环端口并生成一次性令牌，uvicorn 线程就绪后打开
 WebView2 窗口；关闭窗口先执行 Runtime 安全停止（含最终安全帧），再退出 uvicorn。
-无需单独启动 Python WebSocket 或浏览器。历史 Electron 链路（`npm run build:release`）
-已由本桌面链路替代，`electron/` 目录保留仅作参考。
+无需单独启动 Python WebSocket 或浏览器。历史 Electron 链路已整体删除
+（源码仅 `electron/` 目录保留参考）；发布脚本 `scripts/build-release.ps1`
+现走 PyInstaller 桌面链路。
 
 ## 诊断与测试
 
@@ -114,9 +115,9 @@ python -m pip check
 git diff --check
 ```
 
-当前最终基线：Python 全量 `124 passed`（含 desktop 包 12 项）、前端 vitest `15 passed`。
-历史 Electron 链路的 Node 测试（`npm test`，6 项）在迁移前仍通过；`electron/` 目录
-退役后该测试不再属于发布链路。
+当前最终基线：Python 全量 `132 passed`、前端 vitest `15 passed`。
+历史 Electron 链路（`ecat-electron-backend` 入口、Node 测试与 backend PyInstaller spec）
+已删除；`electron/` 目录仅保留参考，不再属于发布链路。
 
 命令行工具在只有一个物理网卡时自动选择；多网卡或没有物理网卡时请把接口名作为位置参数传入。
 命令行 Jog 最长 10 秒，退出或中断时发送零速度并禁能。
@@ -225,7 +226,6 @@ py -m dm3c_ecat.desktop.cli
 - `src/dm3c_ecat/desktop/gateway.py`：命令校验与 Runtime 分发（单控制客户端所有权）
 - `src/dm3c_ecat/desktop/schemas.py`：严格 JSON 类型校验原语
 - `webui/src/`：React + TypeScript 前端（契约层 `api/types.ts`、门控 `logic/gates.ts`）
-- `src/dm3c_ecat/websocket_hmi.py`：旧 Electron 网关（保留参考，退役）
 - `electron/`：旧 Electron 主进程（保留参考，退役）
 - `src/dm3c_ecat/probe.py`：扫描、PDO 检查和 SAFE-OP 验证
 - `src/dm3c_ecat/jog.py`：受限命令行 Jog 备用工具

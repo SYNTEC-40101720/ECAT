@@ -44,6 +44,7 @@ export interface Snapshot {
   ioConnected: boolean;
   weldingConnected: boolean;
   connected: boolean;
+  stateConnected: boolean;
   enabled: boolean;
   enableRequested: boolean;
   motionMode: MotionMode;

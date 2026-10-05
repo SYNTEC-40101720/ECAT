@@ -252,6 +252,36 @@ def is_tolerated_mapping_error(
     )
 
 
+def tolerated_map_size(
+    master: object,
+    *,
+    overlap: bool,
+    tolerated_slave: tuple[RemoteIoProfile, int],
+) -> int:
+    """config[_overlap]_map，容忍 profile 声明的固定 PDO 映射 SDO 错误。
+
+    全部 SDO 错误都被 ``tolerated_mapping_sdo_errors`` 命中时，跳过
+    驱动侧的映射写入，以从站已上报的 process image 尺寸（output+
+    input 求和）为准返回。否则原样抛出。共享实现：hmi._map_process_data
+    与 probe.map_process_data 都走这里，日志文案由调用方自行输出。
+    """
+    profile, slave_position = tolerated_slave
+    mapper = master.config_overlap_map if overlap else master.config_map
+    try:
+        return mapper()
+    except pysoem.ConfigMapError as exc:
+        errors = getattr(exc, "error_list", ())
+        if errors and all(
+            is_tolerated_mapping_error(error, profile, slave_position)
+            for error in errors
+        ):
+            return sum(
+                len(candidate.output) + len(candidate.input)
+                for candidate in master.slaves
+            )
+        raise
+
+
 DRIVE_PROFILES = (
     DriveProfile(
         "Leadshine DM3C-EC556",

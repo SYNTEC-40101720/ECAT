@@ -2,14 +2,24 @@
 import { useEffect, useState } from "react";
 import type { Snapshot, WeldingMode } from "../api/types";
 import type { Gates } from "../logic/gates";
+import { intIn } from "../logic/validation";
 
-const WELDING_MODES: { mode: WeldingMode; label: string; sub: string }[] = [
-  { mode: "dc_unified", label: "DC", sub: "直流一元化" },
-  { mode: "pulse_unified", label: "PULSE", sub: "脉冲一元化" },
-  { mode: "job", label: "JOB", sub: "程序调用" },
-  { mode: "remote", label: "近控", sub: "近控模式" },
-  { mode: "separate", label: "分别", sub: "分别模式" },
-];
+// 目录从单一映射派生：mode 值集与 types.ts 的 WeldingMode 保持一致，
+// 中文短说明是本页唯一的展示层知识。
+const WELDING_MODE_SUBS: Record<WeldingMode, string> = {
+  dc_unified: "直流一元化",
+  pulse_unified: "脉冲一元化",
+  job: "程序调用",
+  remote: "近控模式",
+  separate: "分别模式",
+};
+const WELDING_MODES: { mode: WeldingMode; label: string; sub: string }[] = (
+  Object.keys(WELDING_MODE_SUBS) as WeldingMode[]
+).map((mode) => ({
+  mode,
+  label: mode === "dc_unified" ? "DC" : mode === "pulse_unified" ? "PULSE" : mode.toUpperCase(),
+  sub: WELDING_MODE_SUBS[mode],
+}));
 
 interface WeldingPageProps {
   snap: Snapshot | null;
@@ -18,10 +28,6 @@ interface WeldingPageProps {
   hasControl: boolean;
   requestedWeldingMode: WeldingMode;
   onRequestWeldingMode: (mode: WeldingMode) => void;
-}
-
-function intIn(value: number, minimum: number, maximum: number): number | null {
-  return Number.isInteger(value) && value >= minimum && value <= maximum ? value : null;
 }
 
 export function WeldingPage({

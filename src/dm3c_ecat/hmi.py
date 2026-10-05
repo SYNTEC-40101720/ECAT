@@ -9,18 +9,18 @@ from collections import deque
 import pysoem
 
 from .device_profiles import (
+    deserialize_feedback,
     enumerate_adapters,
     get_drive_profile,
     get_remote_io_profile,
     get_welding_profile,
     initialize_remote_io_modules,
-    is_tolerated_mapping_error,
     pdo_layout_bytes,
     read_pdo_mapping,
     required_role_offsets,
     resolve_default_interface,
     serialize_command,
-    deserialize_feedback,
+    tolerated_map_size,
 )
 from .logging_setup import DEFAULT_LOG_FILE, configure_logging
 from .motion_modes import (
@@ -76,6 +76,21 @@ CIA402_STATE_RETRIES = 100
 MIN_POSITION = -(1 << 31)
 MAX_POSITION = (1 << 31) - 1
 VELOCITY_MODES = {MODE_VM, MODE_PV, MODE_CSV}
+
+# 总线已连通过程数据交换的状态集合：驱动使能/运动/焊接均隐含连通，
+# OPERATIONAL 为纯 I/O 或焊接待机。快照的 connected/ioConnected 等
+# 字段与各命令的状态门控共用此定义。
+CONNECTED_STATES = frozenset(
+    {
+        "OPERATIONAL",
+        "ENABLED",
+        "JOGGING",
+        "PP_MOVING",
+        "HOMING",
+        "CSP_MOVING",
+        "WELDING",
+    }
+)
 
 # A ring buffer that the WebSocket gateway replays to clients.
 LOG_BUFFER: deque[str] = deque(maxlen=400)
@@ -164,8 +179,6 @@ def tsvb_pp_packet(
     controlword: int,
     target_position: int,
     velocity: int,
-    mode: int = 1,
-    io_output: int = 0,
 ) -> bytes:
     """Jiutong TSVB-EA RxPDO 0x1601 (PP, actual firmware mapping):
     target_position(4) + velocity(4) + controlword(2) = 10 bytes. Mode via SDO 0x6060."""
@@ -174,8 +187,6 @@ def tsvb_pp_packet(
 
 def tsvb_homing_packet(
     controlword: int,
-    mode: int = 6,
-    io_output: int = 0,
 ) -> bytes:
     """Jiutong TSVB-EA RxPDO 0x1601 used for Homing: homing parameters via SDO."""
     return struct.pack("<iiH", 0, 0, controlword)
@@ -185,7 +196,6 @@ def tsvb_csp_packet(
     controlword: int,
     target_position: int,
     target_velocity: int = 0,
-    mode: int = 8,
 ) -> bytes:
     """Jiutong TSVB-EA RxPDO 0x1600 (CSP, actual firmware mapping):
     target_position(4) + velocity(4) + torque(2) + controlword(2) = 12 bytes."""
@@ -195,8 +205,6 @@ def tsvb_csp_packet(
 def tsvb_velocity_packet(
     controlword: int,
     velocity: int,
-    mode: int = 3,
-    io_output: int = 0,
 ) -> bytes:
     """Jiutong TSVB-EA RxPDO 0x1601 (PV, when enabled): position+velocity+controlword."""
     return struct.pack("<iiH", 0, velocity, controlword)
@@ -306,6 +314,46 @@ class Runtime:
         self.welding_touch_enable = False
         self.welding_heartbeat = 0.0
 
+    def _reset_motion_state_locked(
+        self,
+        *,
+        halt_pp: bool,
+        clear_csp_protection: bool,
+        clear_io_mask: bool,
+    ) -> None:
+        """复位运动状态公共字段（调用方须已持有 self.lock）。
+
+        各调用点的差异语义通过参数显式化，不借机"修正"历史漂移：
+        - ``halt_pp``: stop_motion 条件置位（仅 PP 模式 halted），
+          disable/_latch/select_interface 硬 True。
+        - ``clear_csp_protection``: _latch 与 select_interface 清除
+          保护态/跟随误差，stop_motion/disable 保留（目标被改写为
+          当前位置）。
+        - ``clear_io_mask``: stop_motion 在 io_profile 存在时清
+          DO 掩码，disable/_latch 恒清。
+        """
+        self.command = 0
+        self.heartbeat = 0
+        self.pp_move_pending = False
+        self.pp_move_active = False
+        self.pp_trigger = False
+        self.pp_halted = halt_pp or self.motion_mode == MODE_PP
+        self.pp_heartbeat = 0
+        self.homing_pending = False
+        self.homing_active = False
+        self.homing_trigger = False
+        self.homing_heartbeat = 0
+        self.csp_move_pending = False
+        self.csp_move_active = False
+        self.csp_heartbeat = 0
+        if clear_csp_protection:
+            self.csp_command_position = None
+            self.csp_last_cycle_at = None
+            self.csp_protection_active = False
+            self.csp_following_error = 0
+        if clear_io_mask:
+            self.io_output_mask = 0
+
     def start(self) -> None:
         if not self.interface:
             with self.lock:
@@ -404,28 +452,19 @@ class Runtime:
             self.expected_wkc = 0
             self.enabled = False
             self.enable_requested = False
-            self.command = 0
-            self.heartbeat = 0
             self.last_target_velocity = 0
             self.last_logged_command = 0
             self.motion_mode = MODE_PV
             self.pending_mode = None
-            self.pp_move_pending = False
-            self.pp_move_active = False
-            self.pp_trigger = False
+            self._reset_motion_state_locked(
+                halt_pp=True,
+                clear_csp_protection=False,
+                clear_io_mask=False,
+            )
             self.pp_move_cycles = 0
-            self.pp_halted = True
-            self.pp_heartbeat = 0
-            self.homing_pending = False
-            self.homing_active = False
-            self.homing_trigger = False
-            self.homing_heartbeat = 0
             self.csp_target_position = 0
             self.csp_start_position = 0
             self.csp_started_at = 0
-            self.csp_move_pending = False
-            self.csp_move_active = False
-            self.csp_heartbeat = 0
             self.actual_position = 0
         self.start()
 
@@ -805,28 +844,18 @@ class Runtime:
                 or self.csp_move_active
                 or self.welding_command_active
             )
-            self.command = 0
-            self.heartbeat = 0
-            self.pp_move_pending = False
-            self.pp_move_active = False
-            self.pp_trigger = False
-            self.pp_halted = self.motion_mode == MODE_PP
-            self.pp_heartbeat = 0
-            self.homing_pending = False
-            self.homing_active = False
-            self.homing_trigger = False
-            self.homing_heartbeat = 0
-            self.csp_move_pending = False
-            self.csp_move_active = False
+            # pp_halted 语义：仅当前处于 PP 模式时视为 halted。
+            self._reset_motion_state_locked(
+                halt_pp=False,
+                clear_csp_protection=False,
+                clear_io_mask=self.io_profile is not None,
+            )
             self.csp_target_position = self.actual_position
             self.csp_start_position = self.actual_position
             self.csp_started_at = 0
-            self.csp_heartbeat = 0
             outputs_were_set = self.io_output_mask != 0
             welding_was_active = self.welding_command_active
             self._clear_welding_command_locked()
-            if self.io_profile is not None:
-                self.io_output_mask = 0
             if had_motion or self.last_logged_command != 0:
                 LOGGER.info("Motion stopped; enable state preserved")
                 self.last_logged_command = 0
@@ -840,26 +869,16 @@ class Runtime:
         with self.lock:
             self.enable_requested = False
             self.enabled = False
-            self.command = 0
-            self.heartbeat = 0
             self.last_logged_command = 0
-            self.pp_move_pending = False
-            self.pp_move_active = False
-            self.pp_trigger = False
-            self.pp_halted = True
-            self.pp_heartbeat = 0
-            self.homing_pending = False
-            self.homing_active = False
-            self.homing_trigger = False
-            self.homing_heartbeat = 0
-            self.csp_move_pending = False
-            self.csp_move_active = False
+            self._reset_motion_state_locked(
+                halt_pp=True,
+                clear_csp_protection=False,
+                clear_io_mask=True,
+            )
             self.csp_target_position = self.actual_position
             self.csp_start_position = self.actual_position
             self.csp_started_at = 0
-            self.csp_heartbeat = 0
             self._clear_welding_command_locked()
-            self.io_output_mask = 0
             LOGGER.info("Drive disable requested")
         self._transmit_safe_outputs(disable_drive=True)
 
@@ -921,15 +940,7 @@ class Runtime:
                 raise ValueError(
                     f"digital output channel must be 0..{self.io_profile.output_channels - 1}"
                 )
-            if self.state not in {
-                "OPERATIONAL",
-                "ENABLED",
-                "JOGGING",
-                "PP_MOVING",
-                "HOMING",
-                "CSP_MOVING",
-                "WELDING",
-            }:
+            if self.state not in CONNECTED_STATES:
                 raise RuntimeError("digital I/O is not operational")
             bit = 1 << channel
             self.io_output_mask = (
@@ -977,15 +988,7 @@ class Runtime:
             size=self.welding_profile.rx_bytes,
         )
         with self.lock:
-            if self.state not in {
-                "OPERATIONAL",
-                "ENABLED",
-                "JOGGING",
-                "PP_MOVING",
-                "HOMING",
-                "CSP_MOVING",
-                "WELDING",
-            }:
+            if self.state not in CONNECTED_STATES:
                 raise RuntimeError("welding device is not operational")
             self.welding_command_active = True
             self.welding_start_welding = start_welding
@@ -1015,15 +1018,7 @@ class Runtime:
         with self.lock:
             if self.welding_profile is None:
                 raise RuntimeError("Megmeet welding machine is not connected")
-            if self.state not in {
-                "OPERATIONAL",
-                "ENABLED",
-                "JOGGING",
-                "PP_MOVING",
-                "HOMING",
-                "CSP_MOVING",
-                "WELDING",
-            }:
+            if self.state not in CONNECTED_STATES:
                 raise RuntimeError("welding device is not operational")
             if not self.welding_robot_ready:
                 raise RuntimeError("set robot ready before starting welding")
@@ -1252,48 +1247,34 @@ class Runtime:
         )
 
     def _map_process_data(self, *, overlap: bool) -> int:
-        mapper = self.master.config_overlap_map if overlap else self.master.config_map
-        try:
+        # 共享容忍实现（device_profiles.tolerated_map_size）：全部 SDO
+        # 错误被 profile 的 tolerated_mapping_sdo_errors 命中时跳过驱动
+        # 侧映射写入，以下从站上报的 process image 尺寸为准。
+        io_slave = self._io_device()
+        io_profile = self.io_profile
+        if io_slave is None or io_profile is None:
+            mapper = self.master.config_overlap_map if overlap else self.master.config_map
             return mapper()
-        except pysoem.ConfigMapError as exc:
-            io_slave = self._io_device()
-            io_profile = self.io_profile
-            if io_slave is None or io_profile is None:
-                raise
-            slave_position = next(
-                (
-                    index
-                    for index, candidate in enumerate(self.master.slaves, start=1)
-                    if candidate is io_slave
-                ),
-                None,
-            )
-            errors = getattr(exc, "error_list", ())
-            if (
-                slave_position is None
-                or not errors
-                or not all(
-                    is_tolerated_mapping_error(
-                        error,
-                        io_profile,
-                        slave_position,
-                    )
-                    for error in errors
-                )
-            ):
-                raise
-            mapped_size = sum(
-                len(candidate.output) + len(candidate.input)
-                for candidate in self.master.slaves
-            )
-            LOGGER.warning(
-                "Ignoring known fixed-PDO mapping SDO error for %s at slave %s; "
-                "validated mapped process image size=%s bytes",
-                io_profile.name,
-                slave_position,
-                mapped_size,
-            )
-            return mapped_size
+        slave_position = next(
+            (
+                index
+                for index, candidate in enumerate(self.master.slaves, start=1)
+                if candidate is io_slave
+            ),
+            None,
+        )
+        if slave_position is None:
+            mapper = self.master.config_overlap_map if overlap else self.master.config_map
+            return mapper()
+        mapped_size = tolerated_map_size(
+            self.master,
+            overlap=overlap,
+            tolerated_slave=(io_profile, slave_position),
+        )
+        LOGGER.info(
+            "Digital I/O process image mapped: %s bytes", mapped_size
+        )
+        return mapped_size
 
     def configure_io_process_data(self) -> None:
         io_slave = self._io_device()
@@ -1541,27 +1522,13 @@ class Runtime:
             self.running = False
             self.enable_requested = False
             self.enabled = False
-            self.command = 0
-            self.heartbeat = 0
             self.last_target_velocity = 0
             self.last_logged_command = 0
-            self.pp_move_pending = False
-            self.pp_move_active = False
-            self.pp_trigger = False
-            self.pp_halted = True
-            self.pp_heartbeat = 0
-            self.homing_pending = False
-            self.homing_active = False
-            self.homing_trigger = False
-            self.homing_heartbeat = 0
-            self.csp_move_pending = False
-            self.csp_move_active = False
-            self.csp_heartbeat = 0
-            self.csp_command_position = None
-            self.csp_last_cycle_at = None
-            self.csp_protection_active = False
-            self.csp_following_error = 0
-            self.io_output_mask = 0
+            self._reset_motion_state_locked(
+                halt_pp=True,
+                clear_csp_protection=True,
+                clear_io_mask=True,
+            )
             self._clear_welding_command_locked()
             self.state = "ERROR"
             self.message = message
@@ -1677,6 +1644,11 @@ class Runtime:
             raise RuntimeError("welding machine did not reach OP")
         LOGGER.info("EtherCAT welding machine reached OP state")
 
+    @staticmethod
+    def _mask_hex(mask: int, channels: int) -> str:
+        """数字 I/O 掩码的十六进制回显，宽度按通道数上取整到半字节。"""
+        return f"0x{mask:0{(channels + 3) // 4}X}"
+
     def snapshot(self) -> dict[str, object]:
         with self.lock:
             available_modes = self.available_modes()
@@ -1713,15 +1685,6 @@ class Runtime:
                 if has_drive
                 else ""
             )
-            connected_states = {
-                "OPERATIONAL",
-                "ENABLED",
-                "JOGGING",
-                "PP_MOVING",
-                "HOMING",
-                "CSP_MOVING",
-                "WELDING",
-            }
             return {
                 "state": self.state,
                 "message": self.message,
@@ -1735,11 +1698,11 @@ class Runtime:
                 "driveDevice": self.profile.name if self.profile else "",
                 "ioDevice": self.io_profile.name if self.io_profile else "",
                 "weldingDevice": self.welding_profile.name if self.welding_profile else "",
-                "driveConnected": has_drive and self.state in connected_states,
-                "ioConnected": has_digital_io and self.state in connected_states,
-                "weldingConnected": has_welding and self.state in connected_states,
-                "connected": self.state
-                in connected_states,
+                "driveConnected": has_drive and self.state in CONNECTED_STATES,
+                "ioConnected": has_digital_io and self.state in CONNECTED_STATES,
+                "weldingConnected": has_welding and self.state in CONNECTED_STATES,
+                "connected": self.state in CONNECTED_STATES,
+                "stateConnected": self.state in CONNECTED_STATES,
                 "enabled": self.enabled,
                 "enableRequested": self.enable_requested,
                 "motionMode": self.motion_mode,
@@ -1773,16 +1736,16 @@ class Runtime:
                 "expectedWkc": self.expected_wkc,
                 "ioInputMask": str(self.io_input_mask),
                 "ioOutputMask": str(self.io_output_mask),
-                "ioInputMaskHex": (
-                    f"0x{self.io_input_mask:0{(self.io_profile.input_channels + 3) // 4}X}"
-                    if has_digital_io
-                    else "0x0000"
-                ),
-                "ioOutputMaskHex": (
-                    f"0x{self.io_output_mask:0{(self.io_profile.output_channels + 3) // 4}X}"
-                    if has_digital_io
-                    else "0x0000"
-                ),
+                "ioInputMaskHex": self._mask_hex(
+                    self.io_input_mask, self.io_profile.input_channels
+                )
+                if has_digital_io
+                else "0x0000",
+                "ioOutputMaskHex": self._mask_hex(
+                    self.io_output_mask, self.io_profile.output_channels
+                )
+                if has_digital_io
+                else "0x0000",
                 "ioInputChannels": self.io_profile.input_channels if has_digital_io else 0,
                 "ioOutputChannels": self.io_profile.output_channels if has_digital_io else 0,
                 "weldingCommandActive": self.welding_command_active,
@@ -1963,8 +1926,6 @@ class Runtime:
                 mode_value,
             )
         elif packet_kind == "tsvb_velocity":
-            with self.lock:
-                io_output = self.io_output_mask if self.io_profile is None else 0
             if use_field_encoder:
                 values = {
                     PdoRole.CONTROLWORD: controlword,
@@ -1972,14 +1933,11 @@ class Runtime:
                 }
                 drive_slave.output = self._serialize_command(mode_pdo, values)
             else:
-                drive_slave.output = tsvb_velocity_packet(
-                    controlword, velocity, mode=mode_value, io_output=io_output
-                )
+                drive_slave.output = tsvb_velocity_packet(controlword, velocity)
         elif packet_kind == "tsvb_pp":
             with self.lock:
                 target_position = self.pp_target_position
                 profile_velocity = self.pp_profile_velocity
-                io_output = self.io_output_mask if self.io_profile is None else 0
             if use_field_encoder:
                 values = {
                     PdoRole.CONTROLWORD: controlword,
@@ -1992,8 +1950,6 @@ class Runtime:
                     controlword,
                     target_position,
                     profile_velocity,
-                    mode=mode_value,
-                    io_output=io_output,
                 )
         elif packet_kind == "tsvb_homing":
             with self.lock:
@@ -2002,12 +1958,9 @@ class Runtime:
                     self.homing_active = True
                     self.message = "Homing running"
                 homing_active = self.homing_active
-                io_output = self.io_output_mask if self.io_profile is None else 0
             if homing_active:
                 controlword |= HOMING_START
-            drive_slave.output = tsvb_homing_packet(
-                controlword, mode=mode_value, io_output=io_output
-            )
+            drive_slave.output = tsvb_homing_packet(controlword)
         elif packet_kind == "tsvb_csp":
             target_position = self._next_csp_target()
             with self.lock:
@@ -2025,7 +1978,6 @@ class Runtime:
                     controlword,
                     target_position,
                     target_velocity=0,
-                    mode=mode_value,
                 )
         elif packet_kind == "csp":
             target_position = self._next_csp_target()
@@ -2447,6 +2399,9 @@ class Runtime:
         with self.lock:
             self.pending_mode = None
             self.enabled = False
+            # switch_mode 的复位集比其余路径窄：不清 command/heartbeat/
+            # io 掩码/welding（_prepare_bus_switch 已保证这些为零），只消
+            # 掉进行中的运动标记。
             self.pp_move_pending = False
             self.pp_move_active = False
             self.pp_trigger = False
@@ -2589,11 +2544,13 @@ class Runtime:
                         pp_profile_velocity = self.pp_profile_velocity
                         pp_acceleration = self.pp_acceleration
                         pp_deceleration = self.pp_deceleration
+                    # 每周期一次查表即可：is None / packet_kind 同属一个
+                    # mode_pdo 结果，短路条件下仍被求值两次。
+                    pp_pdo = self.profile.mode_pdo(MODE_PP) if self.profile is not None else None
                     if (
                         pp_trigger
-                        and self.profile is not None
-                        and self.profile.mode_pdo(MODE_PP) is not None
-                        and self.profile.mode_pdo(MODE_PP).packet_kind == "tsvb_pp"
+                        and pp_pdo is not None
+                        and pp_pdo.packet_kind == "tsvb_pp"
                     ):
                         self._tsvb_write_pp_sdo(
                             pp_profile_velocity,
@@ -2622,11 +2579,11 @@ class Runtime:
                         hm_slow = self.homing_slow_velocity
                         hm_accel = self.homing_acceleration
                         hm_offset = self.homing_offset
+                    hm_pdo = self.profile.mode_pdo(MODE_HM) if self.profile is not None else None
                     if (
                         homing_running
-                        and self.profile is not None
-                        and self.profile.mode_pdo(MODE_HM) is not None
-                        and self.profile.mode_pdo(MODE_HM).packet_kind == "tsvb_homing"
+                        and hm_pdo is not None
+                        and hm_pdo.packet_kind == "tsvb_homing"
                         and self.homing_pending
                     ):
                         self._tsvb_write_homing_sdo(

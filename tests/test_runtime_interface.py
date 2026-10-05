@@ -921,3 +921,111 @@ def test_feedback_raises_without_mapping(runtime):
 
     with pytest.raises(RuntimeError, match="mapping is not configured"):
         runtime.feedback()
+
+
+# ---------------------------------------------------------------------------
+# 字段驱动编码器 vs 硬编码 packet 函数的等价性
+# ---------------------------------------------------------------------------
+
+def test_field_encoder_reproduces_hardcoded_packets(runtime):
+    """rx_fields 声明的模式：_serialize_command 与硬编码 packet 字节一致。
+
+    这是字段驱动路径的安全前提——两路编码对稳定固件必须等价，仅在
+    固件字段漂移时分叉。DM3C PV/PP/CSP 三模式（HM 分支在运行时恒走
+    homing_packet 硬编码——homing 参数经 SDO 下发，无字段编码路径）+
+    TSVB pp/csp（tsvb_homing 无 rx_fields，走 SDO；KaiFull 未声明
+    rx_fields，走硬编码）。
+    """
+    from dm3c_ecat.device_profiles import DRIVE_PROFILES, serialize_command
+    from dm3c_ecat.motion_modes import PdoRole
+
+    dm3c = DRIVE_PROFILES[0]
+    tsvb = DRIVE_PROFILES[2]
+    controlword = 0x000F
+
+    # DM3C 各模式的驱动上报 RxPDO 布局（与 packet 函数的 struct 序一致）
+    dm3c_layouts = {
+        hmi.MODE_PV: ((0x6040, 0, 16), (0x60FF, 0, 32), (0x6083, 0, 32), (0x6084, 0, 32), (0x6060, 0, 8)),
+        hmi.MODE_PP: ((0x6040, 0, 16), (0x607A, 0, 32), (0x60FF, 0, 32), (0x6083, 0, 32), (0x6084, 0, 32), (0x6060, 0, 8)),
+        hmi.MODE_CSP: ((0x6040, 0, 16), (0x607A, 0, 32)),
+    }
+    dm3c_values = {
+        hmi.MODE_PV: {
+            PdoRole.CONTROLWORD: controlword,
+            PdoRole.TARGET_VELOCITY: 1234,
+            PdoRole.ACCELERATION: 4000,
+            PdoRole.DECELERATION: 2000,
+            PdoRole.MODE_OF_OPERATION: 3,
+        },
+        hmi.MODE_PP: {
+            PdoRole.CONTROLWORD: controlword,
+            PdoRole.TARGET_POSITION: 100000,
+            PdoRole.PROFILE_VELOCITY: 2000,
+            PdoRole.ACCELERATION: 4000,
+            PdoRole.DECELERATION: 2000,
+            PdoRole.MODE_OF_OPERATION: 1,
+        },
+        hmi.MODE_CSP: {
+            PdoRole.CONTROLWORD: controlword,
+            PdoRole.TARGET_POSITION: 98765,
+        },
+    }
+    dm3c_expected = {
+        hmi.MODE_PV: lambda mp, v: hmi.packet(
+            controlword, v[PdoRole.TARGET_VELOCITY],
+            v[PdoRole.ACCELERATION], v[PdoRole.DECELERATION],
+            v[PdoRole.MODE_OF_OPERATION],
+        ),
+        hmi.MODE_PP: lambda mp, v: hmi.pp_packet(
+            controlword, v[PdoRole.TARGET_POSITION],
+            v[PdoRole.PROFILE_VELOCITY], v[PdoRole.ACCELERATION],
+            v[PdoRole.DECELERATION], v[PdoRole.MODE_OF_OPERATION],
+        ),
+        hmi.MODE_CSP: lambda mp, v: hmi.csp_packet(
+            controlword, v[PdoRole.TARGET_POSITION],
+            mode=8, mode_in_pdo=False,
+        ),
+    }
+    for mode, layout in dm3c_layouts.items():
+        mode_pdo = dm3c.mode_pdo(mode)
+        field_image = bytes(
+            serialize_command(
+                layout, mode_pdo.rx_fields, dm3c_values[mode],
+                total_bytes=mode_pdo.rx_bytes,
+            )
+        )
+        hardcoded = dm3c_expected[mode](mode_pdo, dm3c_values[mode])
+        assert field_image == hardcoded, f"{mode} field encoder diverged"
+
+    # TSVB-EA：0x1601 (PP) = target_position + velocity + controlword
+    tsvb_pp = tsvb.mode_pdo(hmi.MODE_PP)
+    tsvb_pp_layout = ((0x607A, 0, 32), (0x60FF, 0, 32), (0x6040, 0, 16))
+    field_image = bytes(
+        serialize_command(
+            tsvb_pp_layout, tsvb_pp.rx_fields,
+            {
+                PdoRole.CONTROLWORD: controlword,
+                PdoRole.TARGET_POSITION: -5000,
+                PdoRole.TARGET_VELOCITY: 3000,
+            },
+            total_bytes=tsvb_pp.rx_bytes,
+        )
+    )
+    assert field_image == hmi.tsvb_pp_packet(controlword, -5000, 3000)
+
+    # TSVB-EA：0x1600 (CSP) = target_position + velocity + target_torque + controlword
+    tsvb_csp = tsvb.mode_pdo(hmi.MODE_CSP)
+    tsvb_csp_layout = ((0x607A, 0, 32), (0x60FF, 0, 32), (0x6071, 0, 16), (0x6040, 0, 16))
+    field_image = bytes(
+        serialize_command(
+            tsvb_csp_layout, tsvb_csp.rx_fields,
+            {
+                PdoRole.CONTROLWORD: controlword,
+                PdoRole.TARGET_POSITION: 76543,
+                PdoRole.TARGET_VELOCITY: 0,
+                PdoRole.TARGET_TORQUE: 0,
+            },
+            total_bytes=tsvb_csp.rx_bytes,
+        )
+    )
+    assert field_image == hmi.tsvb_csp_packet(controlword, 76543, target_velocity=0)

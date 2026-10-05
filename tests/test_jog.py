@@ -10,7 +10,6 @@ from dm3c_ecat.jog import (
     MAX_VELOCITY,
     output_packet,
     statusword_from_input,
-    statusword_from_overlap_output,
     wait_status,
 )
 import dm3c_ecat.jog as jog
@@ -46,7 +45,6 @@ def test_statusword_is_read_from_input_process_image():
     slave.input[2:4] = (0x0021).to_bytes(2, "little")
 
     assert statusword_from_input(slave) == 0x0021
-    assert statusword_from_overlap_output(slave) == 0x0021
 
 
 def test_statusword_supports_observed_dm3c_txpdo_offset():

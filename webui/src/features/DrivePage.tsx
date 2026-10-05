@@ -4,18 +4,24 @@ import { useEffect, useRef, useState } from "react";
 import type { Snapshot } from "../api/types";
 import type { Gates } from "../logic/gates";
 import { MODE_LABELS, PANEL_MODES, VELOCITY_MODES } from "../logic/gates";
+import { safeInt } from "../logic/validation";
 
-const MODES: { mode: string; label: string; sub: string }[] = [
-  { mode: "pv", label: "PV", sub: "轮廓速度" },
-  { mode: "pp", label: "PP", sub: "轮廓位置" },
-  { mode: "vm", label: "VM", sub: "速度模式" },
-  { mode: "pt", label: "PT", sub: "轮廓转矩" },
-  { mode: "hm", label: "HM", sub: "回零" },
-  { mode: "ip", label: "IP", sub: "插补位置" },
-  { mode: "csp", label: "CSP", sub: "周期同步位置" },
-  { mode: "csv", label: "CSV", sub: "周期同步速度" },
-  { mode: "cst", label: "CST", sub: "周期同步转矩" },
-];
+// 模式目录从 gates.MODE_LABELS 派生（值集 = 后端 availableModes 契约），
+// 本页只补展示层的中文短说明；label 用模式名大写（与旧 UI 一致）。
+const MODE_SUBS: Record<string, string> = {
+  pv: "轮廓速度",
+  pp: "轮廓位置",
+  vm: "速度模式",
+  pt: "轮廓转矩",
+  hm: "回零",
+  ip: "插补位置",
+  csp: "周期同步位置",
+  csv: "周期同步速度",
+  cst: "周期同步转矩",
+};
+const MODES: { mode: string; label: string; sub: string }[] = Object.keys(MODE_LABELS).map(
+  (mode) => ({ mode, label: mode.toUpperCase(), sub: MODE_SUBS[mode] ?? "" }),
+);
 
 const MAX_VELOCITY = 100000;
 const MAX_POSITION = 2147483647;
@@ -105,8 +111,7 @@ export function DrivePage({ snap, gates, onSwitchMode, send }: DrivePageProps) {
     };
   }, []);
 
-  const integerInput = (value: number | null): number | null =>
-    value === null ? null : Number.isSafeInteger(value) ? value : null;
+  const integerInput = safeInt;
 
   const movePp = () => {
     if (!gates.canMovePp) return;
