@@ -42,7 +42,7 @@ cd webui && npm install && npm run build && cd ..
 py -m dm3c_ecat.desktop.cli
 ```
 
-免安装直接启动（源码 checkout 未 `pip install` 时）：`py start_ecat_test.py`，
+免安装直接启动（源码 checkout 未 `pip install` 时）：`py main.py`，
 参数与 `ecat-desktop` 相同（该包装器把 `src/` 注入 `PYTHONPATH` 后转发到同一入口）。
 
 启动时会枚举 Npcap 网卡并过滤 WAN Miniport、Wi-Fi、蓝牙、VPN、虚拟和回环接口。
@@ -111,7 +111,7 @@ ecat-jog <velocity-in-drive-units> <seconds> --confirm-jog
 
 ```powershell
 python -m pytest -q
-python -m compileall -q src tests start_ecat_test.py
+python -m compileall -q src tests main.py
 cd webui && npm run typecheck && cd ..
 python -m pip check
 git diff --check
@@ -119,7 +119,7 @@ git diff --check
 
 当前最终基线：Python 全量 `117 passed`、前端 vitest `16 passed`。
 历史 Electron 链路（`ecat-electron-backend` 入口、Node 测试与 backend PyInstaller spec）
-已于 2026-10-04 的 L9 迁移中整体删除，`electron/`、`start_ecat_test.py` 与旧
+已于 2026-10-04 的 L9 迁移中整体删除，`electron/` 与旧
 `src/dm3c_ecat/web/` 静态页不再存在于仓库。
 
 命令行工具在只有一个物理网卡时自动选择；多网卡或没有物理网卡时请把接口名作为位置参数传入。
@@ -222,7 +222,7 @@ py -m dm3c_ecat.desktop.cli
 
 - `src/dm3c_ecat/logging_setup.py`：日志配置和滚动文件处理
 - `src/dm3c_ecat/hmi.py`：实时周期主站（Runtime）
-- `start_ecat_test.py`：免安装启动包装器（转发到 `ecat-desktop` 入口）
+- `main.py`：免安装启动包装器（转发到 `ecat-desktop` 入口）
 - `src/dm3c_ecat/desktop/cli.py`：桌面入口 `ecat-desktop`（含 `--no-window` 无头模式）
 - `src/dm3c_ecat/desktop/launcher.py`：随机回环端口、一次性令牌、uvicorn 线程与关闭顺序
 - `src/dm3c_ecat/desktop/app.py`：FastAPI 应用（WS `/api/v1/events`、健康检查、静态托管）

@@ -1,11 +1,11 @@
 """Start the SYNTEC ECAT Test desktop HMI.
 
-Thin wrapper: prefers the packaged backend entry (dm3c_ecat.desktop.cli) when
-the package is importable; falls back to running the module from the repo so
-the launcher works in a source checkout without an install step.
+Thin wrapper: injects ``src/`` into PYTHONPATH and forwards all arguments to
+the real entry point (``dm3c_ecat.desktop.cli``), so the launcher works in a
+source checkout without an install step.
 
 Usage:
-    py start_ecat_test.py [--interface \\Device\\NPF_{GUID}] [--no-window]
+    py main.py [--interface \\Device\\NPF_{GUID}] [--no-window]
 """
 
 from __future__ import annotations
