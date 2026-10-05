@@ -42,6 +42,9 @@ cd webui && npm install && npm run build && cd ..
 py -m dm3c_ecat.desktop.cli
 ```
 
+免安装直接启动（源码 checkout 未 `pip install` 时）：`py start_ecat_test.py`，
+参数与 `ecat-desktop` 相同（该包装器把 `src/` 注入 `PYTHONPATH` 后转发到同一入口）。
+
 启动时会枚举 Npcap 网卡并过滤 WAN Miniport、Wi-Fi、蓝牙、VPN、虚拟和回环接口。
 只有一个物理网卡时自动使用它；存在多个物理网卡时，HMI 会在设置面板的网卡列表中选择。
 未选定网卡不会启动 EtherCAT 实时线程。网卡只能在驱动未使能且没有运动命令时切换。
@@ -108,7 +111,7 @@ ecat-jog <velocity-in-drive-units> <seconds> --confirm-jog
 
 ```powershell
 python -m pytest -q
-python -m compileall -q src tests
+python -m compileall -q src tests start_ecat_test.py
 cd webui && npm run typecheck && cd ..
 python -m pip check
 git diff --check
@@ -219,6 +222,7 @@ py -m dm3c_ecat.desktop.cli
 
 - `src/dm3c_ecat/logging_setup.py`：日志配置和滚动文件处理
 - `src/dm3c_ecat/hmi.py`：实时周期主站（Runtime）
+- `start_ecat_test.py`：免安装启动包装器（转发到 `ecat-desktop` 入口）
 - `src/dm3c_ecat/desktop/cli.py`：桌面入口 `ecat-desktop`（含 `--no-window` 无头模式）
 - `src/dm3c_ecat/desktop/launcher.py`：随机回环端口、一次性令牌、uvicorn 线程与关闭顺序
 - `src/dm3c_ecat/desktop/app.py`：FastAPI 应用（WS `/api/v1/events`、健康检查、静态托管）
