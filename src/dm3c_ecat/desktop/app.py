@@ -23,6 +23,24 @@ LOGGER = logging.getLogger("ecat_test.desktop.app")
 SNAPSHOT_PERIOD = 0.2
 
 
+def _ring_buffer_new_lines(last: list[str], current: list[str]) -> list[str]:
+    """求环形日志缓冲两轮快照之间的新增行。
+
+    环形缓冲的既存内容是**前缀稳定**的：上轮列表的尾部若干行会原样
+    出现在本轮列表的开头（旧实现按计数切片、缓冲填满后 len 恒为
+    maxlen，切片永远为空、新日志静默丢失，即为此被替换）。对齐方式
+    是找 ``k`` 使 ``last[-k:] == current[:k]``，取**最小**的满足值：
+    对齐偏小只会造成旧行重发（无害），对齐偏大会把新行当旧行吞掉。
+    找不到非空对齐（一个周期内追加超过容量的行，或内容完全换血）则
+    全量重发——同样宁可重复也不能丢。
+    """
+    max_k = min(len(last), len(current))
+    for k in range(1, max_k + 1):
+        if last[-k:] == current[:k]:
+            return current[k:]
+    return list(current)
+
+
 def create_app(
     gateway: ControlGateway,
     static_dir: Path | None = None,
@@ -30,27 +48,27 @@ def create_app(
     clients: set[WebSocket] = set()
 
     async def broadcast(payload: dict[str, object]) -> None:
-        # 单次快照客户端集合：gather 期间断开的连接由各自 send 的异常自行
-        # 退出，不再用 zip 二次配对（旧实现的错位 bug 在此消除）。
         if not clients:
             return
         message = json.dumps(payload, ensure_ascii=False)
-        for client in tuple(clients):
-            try:
-                await client.send_text(message)
-            except Exception:
+        # gather 并发发送；异常的连接移出集合（断开/超时），不影响其余。
+        sent_to = tuple(clients)
+        results = await asyncio.gather(
+            *(client.send_text(message) for client in sent_to),
+            return_exceptions=True,
+        )
+        for client, result in zip(sent_to, results):
+            if isinstance(result, BaseException):
                 clients.discard(client)
 
     async def publisher() -> None:
-        last_log_count = len(LOG_BUFFER)
+        last_logs = list(LOG_BUFFER)
         while True:
             await broadcast({"type": "state", "data": gateway.runtime.snapshot()})
             current_logs = list(LOG_BUFFER)
-            if len(current_logs) < last_log_count:
-                last_log_count = 0
-            for line in current_logs[last_log_count:]:
+            for line in _ring_buffer_new_lines(last_logs, current_logs):
                 await broadcast({"type": "log", "data": line})
-            last_log_count = len(current_logs)
+            last_logs = current_logs
             await asyncio.sleep(SNAPSHOT_PERIOD)
 
     @contextlib.asynccontextmanager
@@ -106,7 +124,9 @@ def create_app(
         finally:
             clients.discard(connection)
             if gateway.release_owner(connection):
-                gateway.runtime.stop()
+                # stop() 走一次 EtherCAT 收发（安全帧），放线程池避免
+                # 阻塞同一事件循环上的其余连接。
+                await asyncio.to_thread(gateway.runtime.stop)
                 LOGGER.info("Control client disconnected; runtime stopped")
             await broadcast(control_payload(gateway.control_owner))
 

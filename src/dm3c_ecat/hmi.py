@@ -350,6 +350,12 @@ class Runtime:
                 raise RuntimeError(
                     "disable the drive or clear outputs before changing interface"
                 )
+            # 模式切换在 SWITCHING 期间重配置总线：网卡切换的总线重建会与
+            # set_mode 未完成的重配置竞争，必须等切换结束。
+            if self.pending_mode is not None or self.state == "SWITCHING":
+                raise RuntimeError(
+                    "wait for the mode switch to finish before changing interface"
+                )
             same_active_interface = (
                 self.interface == selected and self.thread.is_alive()
             )

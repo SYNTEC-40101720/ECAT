@@ -59,7 +59,15 @@ def _acquire_lock(port_file: Path) -> None:
 def _pick_port() -> int:
     explicit = os.environ.get("ECAT_PORT")
     if explicit:
-        return int(explicit)
+        try:
+            port = int(explicit)
+        except ValueError:
+            raise ValueError(f"ECAT_PORT must be an integer, got {explicit!r}") from None
+        if not 1 <= port <= 65535:
+            raise ValueError(f"ECAT_PORT must be within 1-65535, got {port}")
+        return port
+    # 随机路径的 bind-to-0 存在轻微 TOCTOU（bind 与 uvicorn 实际绑定之间
+    # 端口可能被抢占）；完全消除需改 uvicorn 绑定模型，收益低，接受现状。
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind((LOOPBACK_HOST, 0))
         return int(sock.getsockname()[1])
@@ -124,7 +132,7 @@ def start_server(
     if state_dir is not None:
         _write_port_file(state_dir / "ecat-test.port.json", bind_port, token)
     url = f"http://{LOOPBACK_HOST}:{bind_port}/?token={token}"
-    return {"host": bind_host, "port": bind_port, "token": token, "url": url, "server": server}
+    return {"host": bind_host, "port": bind_port, "token": token, "url": url, "server": server, "thread": thread}
 
 
 def run_desktop(
@@ -190,4 +198,7 @@ def _shutdown(server_info: dict[str, Any], gateway: ControlGateway) -> int:
     runtime.close()
     server = server_info["server"]
     server.should_exit = True
+    # uvicorn 线程是 daemon，不 join 会拖着 server 一起被 abruptly 终止，
+    # 静态连接的 WS 客户端拿不到 close 帧；3s 足够 uvicorn 完成优雅关闭。
+    server_info["thread"].join(timeout=3)
     return 0

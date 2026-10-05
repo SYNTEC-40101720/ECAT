@@ -291,3 +291,54 @@ def test_cli_main_starts_runtime_thread(monkeypatch, tmp_path):
     assert exit_code == 0
     assert len(created) == 1
     assert created[0].start_calls == 1
+
+
+def test_ring_buffer_new_lines_appends_and_wraparound():
+    """publisher 的环形缓冲差量：未满载追加只发新行；满载后对齐前缀。
+
+    旧计数切片实现缓冲填满后 len 恒为 maxlen、切片永远为空（新日志静默
+    丢失），此测试锁定正确语义。
+    """
+    from dm3c_ecat.desktop.app import _ring_buffer_new_lines
+
+    # 未满载追加：[a] -> [a, b, c]，只发 [b, c]
+    assert _ring_buffer_new_lines(["a"], ["a", "b", "c"]) == ["b", "c"]
+    # 满载滚动：[a, b, c] -> [b, c, d]，只发 [d]
+    assert _ring_buffer_new_lines(["a", "b", "c"], ["b", "c", "d"]) == ["d"]
+    # 满载后连续滚动多行：[a, b, c] -> [c, d, e]，发 [d, e]
+    assert _ring_buffer_new_lines(["a", "b", "c"], ["c", "d", "e"]) == ["d", "e"]
+    # 首轮（last 为空）：全量发
+    assert _ring_buffer_new_lines([], ["a", "b"]) == ["a", "b"]
+    # 无公共前缀对齐（一个周期内换血超过容量）：全量重发，宁可重复不丢
+    assert _ring_buffer_new_lines(["x", "y"], ["a", "b", "c"]) == ["a", "b", "c"]
+    # 相邻行内容重复时的对齐歧义：取最小对齐 k=1，旧行重发一行（无害），
+    # 绝不把新行当旧行吞掉
+    assert _ring_buffer_new_lines(["a", "a"], ["a", "a", "b"]) == ["a", "b"]
+
+
+def test_ring_buffer_new_lines_full_wrap_more_than_capacity():
+    """一个周期追加超过容量：无法对齐，全量重发当前缓冲。"""
+    from dm3c_ecat.desktop.app import _ring_buffer_new_lines
+
+    # 容量 3：上轮 [a, b, c]，本轮已滚过 4 行只剩 [d, e, f]
+    assert _ring_buffer_new_lines(["a", "b", "c"], ["d", "e", "f"]) == [
+        "d",
+        "e",
+        "f",
+    ]
+
+
+def test_pick_port_rejects_invalid_ecat_port(monkeypatch):
+    """ECAT_PORT 非整数/超范围时给清晰错误而非裸 int() 崩溃。"""
+    from dm3c_ecat.desktop import launcher
+
+    monkeypatch.setenv("ECAT_PORT", "not-a-port")
+    with pytest.raises(ValueError, match="ECAT_PORT must be an integer"):
+        launcher._pick_port()
+
+    monkeypatch.setenv("ECAT_PORT", "70000")
+    with pytest.raises(ValueError, match="1-65535"):
+        launcher._pick_port()
+
+    monkeypatch.setenv("ECAT_PORT", "8642")
+    assert launcher._pick_port() == 8642

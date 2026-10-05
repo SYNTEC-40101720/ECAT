@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
 from pathlib import Path
 
 from ..device_profiles import resolve_default_interface
@@ -68,11 +69,17 @@ def main() -> int:
         not args.no_window,
         static_dir,
     )
-    return run_desktop(
-        gateway,
-        static_dir,
-        open_window=not args.no_window,
-    )
+    try:
+        return run_desktop(
+            gateway,
+            static_dir,
+            open_window=not args.no_window,
+        )
+    except ValueError as exc:
+        # _pick_port 对 ECAT_PORT 的校验等启动期配置错误：打印后以
+        # 退出码 2 结束，不弹 WebView 窗口也不留后台线程。
+        print(f"ecat-desktop: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

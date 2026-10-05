@@ -146,6 +146,18 @@ def test_select_interface_is_rejected_during_homing_or_csp(runtime, motion_field
         runtime.select_interface("other-iface")
 
 
+@pytest.mark.parametrize(
+    "blocked_state", [{"pending_mode": hmi.MODE_PP}, {"state": "SWITCHING"}]
+)
+def test_select_interface_is_rejected_during_mode_switch(runtime, blocked_state):
+    """SWITCHING 期间网卡切换会与 set_mode 未完成的总线重配置竞争。"""
+    for field, value in blocked_state.items():
+        setattr(runtime, field, value)
+
+    with pytest.raises(RuntimeError, match="mode switch"):
+        runtime.select_interface("other-iface")
+
+
 @pytest.mark.parametrize("motion_field", ["homing_active", "csp_move_active"])
 def test_set_mode_is_rejected_during_homing_or_csp(runtime, motion_field):
     runtime.motion_mode = hmi.MODE_PV

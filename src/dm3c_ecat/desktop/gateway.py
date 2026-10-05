@@ -187,7 +187,9 @@ class ControlGateway:
             validate_fields(command)
             if connection is None or self.control_owner is not connection:
                 raise ValueError("control ownership required")
-            self.runtime.stop_motion()
+            # stop_motion 含一次 10ms EtherCAT 收发（_transmit_safe_outputs），
+            # 不能在事件循环里同步等它。
+            await asyncio.to_thread(self.runtime.stop_motion)
             self.control_owner = None
             return {"type": "control", "command": name, "accepted": True}
         if connection is not None and name in CONTROL_COMMANDS:
@@ -212,7 +214,9 @@ class ControlGateway:
             }
             if not selectable.get(selected, False):
                 raise ValueError("select a listed physical EtherCAT adapter")
-            self.runtime.select_interface(selected)
+            # select_interface 会 join 旧 runtime 线程（最长 2s）并重配置总
+            # 线，直接调用会把 200ms 快照广播和所有 WS 命令卡住同样久。
+            await asyncio.to_thread(self.runtime.select_interface, selected)
         elif name == "jog":
             validate_fields(command, required=("velocity",))
             self.runtime.jog(require_int(command, "velocity"))
@@ -269,13 +273,16 @@ class ControlGateway:
             self.runtime.pp_keepalive()
         elif name == "stop":
             validate_fields(command)
-            self.runtime.stop_motion()
+            # stop_motion 的安全帧同样是一次 EtherCAT 收发，交给线程池。
+            await asyncio.to_thread(self.runtime.stop_motion)
         elif name == "enable":
             validate_fields(command)
             self.runtime.enable()
         elif name == "disable":
             validate_fields(command)
-            self.runtime.disable()
+            # disable 含禁用安全帧（_transmit_safe_outputs），不能阻塞事件
+            # 循环。
+            await asyncio.to_thread(self.runtime.disable)
         elif name == "set_ramp":
             validate_fields(command, required=("acceleration", "deceleration"))
             self.runtime.set_ramp_times(
