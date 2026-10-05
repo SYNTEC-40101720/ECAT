@@ -92,12 +92,6 @@ def runtime(monkeypatch: pytest.MonkeyPatch) -> Any:
 
 
 @pytest.fixture
-def runtime_no_assertions() -> Any:
-    """Alias kept for clarity; prefer ``runtime``."""
-    return None
-
-
-@pytest.fixture
 def process_slave() -> FakeProcessSlave:
     return FakeProcessSlave()
 

@@ -72,9 +72,8 @@ py -m PyInstaller --noconfirm --clean --distpath build\desktop-dist --workpath b
 
 启动流程：`ecat-desktop` 随机选回环端口并生成一次性令牌，uvicorn 线程就绪后打开
 WebView2 窗口；关闭窗口先执行 Runtime 安全停止（含最终安全帧），再退出 uvicorn。
-无需单独启动 Python WebSocket 或浏览器。历史 Electron 链路已整体删除
-（源码仅 `electron/` 目录保留参考）；发布脚本 `scripts/build-release.ps1`
-现走 PyInstaller 桌面链路。
+无需单独启动 Python WebSocket 或浏览器。历史 Electron 链路已整体删除；
+发布脚本 `scripts/build-release.ps1` 现走 PyInstaller 桌面链路。
 
 ## 诊断与测试
 
@@ -109,15 +108,16 @@ ecat-jog <velocity-in-drive-units> <seconds> --confirm-jog
 
 ```powershell
 python -m pytest -q
-python -m compileall -q src tests start_ecat_test.py
+python -m compileall -q src tests
 cd webui && npm run typecheck && cd ..
 python -m pip check
 git diff --check
 ```
 
-当前最终基线：Python 全量 `132 passed`、前端 vitest `15 passed`。
+当前最终基线：Python 全量 `117 passed`、前端 vitest `16 passed`。
 历史 Electron 链路（`ecat-electron-backend` 入口、Node 测试与 backend PyInstaller spec）
-已删除；`electron/` 目录仅保留参考，不再属于发布链路。
+已于 2026-10-04 的 L9 迁移中整体删除，`electron/`、`start_ecat_test.py` 与旧
+`src/dm3c_ecat/web/` 静态页不再存在于仓库。
 
 命令行工具在只有一个物理网卡时自动选择；多网卡或没有物理网卡时请把接口名作为位置参数传入。
 命令行 Jog 最长 10 秒，退出或中断时发送零速度并禁能。
@@ -125,7 +125,7 @@ git diff --check
 ## 当前支持范围与证据边界
 
 已完成并由 mock/fake、静态检查或协议测试自动验证：Runtime 安全停止、CiA 402 状态等待、
-严格 WKC 策略、WebSocket 单控制客户端、Electron ready/shutdown 流程、设备 Revision 和
+严格 WKC 策略、WebSocket 单控制客户端、桌面启动/关闭流程、设备 Revision 和
 PDO assignment 基础校验，以及 PV/PP/HM/CSP 的软件分支。实际结果以
 `DEVELOPMENT_STATE.md` 的最新记录为准。
 
@@ -135,8 +135,7 @@ PDO assignment 基础校验，以及 PV/PP/HM/CSP 的软件分支。实际结果
 必须实机或厂商资料验证：真实驱动/I/O/焊机动作、PP 位置和单位、HM/CSP 跟随与回零、
 WKC/Revision/逐项 PDO 映射、急停/STO/限位/安全门、域控安装和发布包行为。
 
-设备资料和验收边界见 `DEVELOPMENT_STATE.md`；设计记录见 `UI_DESIGN_OVERVIEW.md` 和
-`WEB_HMI_DESIGN.md`。
+设备资料和验收边界见 `DEVELOPMENT_STATE.md`。
 
 ## 目录与交付
 
@@ -226,11 +225,9 @@ py -m dm3c_ecat.desktop.cli
 - `src/dm3c_ecat/desktop/gateway.py`：命令校验与 Runtime 分发（单控制客户端所有权）
 - `src/dm3c_ecat/desktop/schemas.py`：严格 JSON 类型校验原语
 - `webui/src/`：React + TypeScript 前端（契约层 `api/types.ts`、门控 `logic/gates.ts`）
-- `electron/`：旧 Electron 主进程（保留参考，退役）
-- `src/dm3c_ecat/probe.py`：扫描、PDO 检查和 SAFE-OP 验证
+- `src/dm3c_ecat/probe.py`：扫描、PDO 棡查和 SAFE-OP 验证
 - `src/dm3c_ecat/jog.py`：受限命令行 Jog 备用工具
-- `pyproject.toml`：标准 Python 包配置和命令入口
-- `requirements-pysoem.txt`：固定 `pysoem` 版本
+- `pyproject.toml`：标准 Python 包配置和命令入口（`pysoem` 版本固定于此）
 - `ESI/`：设备 ESI 文件（`incoming/` 为汇入区，`active/` 为程序实际使用区，详见 `ESI/README.md`）
 - `DEVELOPMENT_STATE.md`：实机验证记录和安全门槛
 

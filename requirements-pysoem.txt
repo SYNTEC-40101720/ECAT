@@ -1,2 +1,0 @@
-pysoem==1.1.13
-websockets>=14,<16

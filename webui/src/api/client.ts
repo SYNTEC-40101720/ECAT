@@ -18,7 +18,7 @@ export interface Connection {
   sendCommand: (command: string, body?: Record<string, unknown>) => void;
 }
 
-export function wsUrl(): string {
+function wsUrl(): string {
   const params = new URLSearchParams(location.search);
   const token = params.get("token");
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";

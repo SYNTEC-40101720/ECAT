@@ -13,8 +13,7 @@ ESI/
 
 将新获取或待评估的 ESI 文件放在这里。此目录中的文件：
 
-- **不会**被 PyInstaller 打包（`backend.spec` 只引用 `ESI/active`）
-- **不会**被 electron-builder 打包（`electron-builder.yml` 只引用 `ESI/active`）
+- **不会**被 PyInstaller 打包（`packaging/desktop.spec` 只引用 `ESI/active`）
 - **不会**影响程序运行或测试
 
 ## active/ — 使用区

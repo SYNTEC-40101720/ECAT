@@ -41,14 +41,14 @@
 ## L8 SYNTEC 域控发布链路（2026-08-26）
 
 - 默认发布参数待用户复核：产品名 `SYNTEC-ECAT-Test`、版本 `1.0.0.0`、目录
-	`D:\Release\SYNTEC-ECAT-Test`、发布年 `2026`、目标 `win-x64`，Electron GUI 无控制台。
+	`D:\Release\SYNTEC-ECAT-Test`、发布年 `2026`、目标 `win-x64`。
 - 新增 PyInstaller one-dir spec、SYNTEC 中性版本资源（`000004B0`、Translation
 	`[0, 1200]`、`Copyright © SYNTEC 2026`）以及后端/发布/产物验证脚本。后端构建已生成
 	自包含 `SYNTEC-ECAT-Test-Backend.exe`，不依赖目标机 Python。
-- Electron packaged 模式从 `process.resourcesPath\backend` 启动后端，开发态仍使用
-	`py -m dm3c_ecat.websocket_hmi`；必要 ESI 由 `extraResources` 携带。Node 路径测试已通过。
 - Electron 安装产物尝试构建至目标目录，但下载 Electron `38.8.6` 时网络请求超时，故
 	安装包和 packaged GUI 烟雾测试未完成。域控最终安装、签名/白名单和真实设备验收仍待用户。
+	（注：Electron 链路及本节描述的 packaged 启动模式已于 L9 迁移整体删除。）
+
 # ECAT Test 开发状态
 
 最后更新：2026-10-05
@@ -63,8 +63,8 @@
   `gateway.py`（命令校验与分发、单控制客户端所有权）、`schemas.py`（严格 JSON 类型校验）。
 - 修复初审发现 1：新网关默认只绑 `localhost`（旧 `websocket_hmi.py` 绑定所有接口）。
 - 命令集与旧 WS 协议逐项等价（move_pp/start_homing/move_csp/set_welding_command 等全部
-  参数与校验语义保持），由 `tests/test_desktop.py` 11 项覆盖；旧 `websocket_hmi.py` 与
-  `electron/` 保留为参考，不再属于运行链路。
+  参数与校验语义保持），由 `tests/test_desktop.py` 11 项覆盖；旧 `websocket_hmi.py`、
+  `electron/` 与旧 `src/dm3c_ecat/web/` 静态页已于 2026-10-05 的清理提交删除，仓库中不复存在。
 - 前端：`webui/src/api/types.ts` 是 `Runtime.snapshot()` 的契约镜像；安全门控布尔
   （canEnable/canJog/canMovePp/canHome/canMoveCsp/canStartWelding 等）集中于纯函数
   `webui/src/logic/gates.ts`；Jog 120ms 重发定时器在页面失焦/隐藏时本地先掐断再依赖
@@ -101,7 +101,8 @@
 - 控制权状态通过独立 `control` 消息广播；Electron HMI 连接后自动申请，未持有控制权
 	时禁用运动、I/O 和焊机控制。
 - 软件模拟验证：`tests/test_websocket_hmi.py` 为 `16 passed`；尚未进行多浏览器真实
-	连接和现场停止链路验收。
+	连接和现场停止链路验收。（注：该测试随旧 `websocket_hmi.py` 于 c14ecf2 删除，此处为
+	当时验证记录；现行等价覆盖为 `tests/test_desktop.py`。）
 
 ## L1 Runtime 故障测试（2026-08-25）
 
