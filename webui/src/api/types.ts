@@ -71,8 +71,10 @@ export interface Snapshot {
   mode: number;
   wkc: number;
   expectedWkc: number;
-  ioInputMask: number;
-  ioOutputMask: number;
+  // 掩码以字符串传输：64 通道总线的掩码超出 float64 精确范围，
+  // JSON number 会在 JS 侧丢失低位（DI 00 显示错误）。
+  ioInputMask: string;
+  ioOutputMask: string;
   ioInputMaskHex: string;
   ioOutputMaskHex: string;
   ioInputChannels: number;

@@ -1738,8 +1738,8 @@ class Runtime:
                 "mode": self.mode,
                 "wkc": self.wkc,
                 "expectedWkc": self.expected_wkc,
-                "ioInputMask": self.io_input_mask,
-                "ioOutputMask": self.io_output_mask,
+                "ioInputMask": str(self.io_input_mask),
+                "ioOutputMask": str(self.io_output_mask),
                 "ioInputMaskHex": (
                     f"0x{self.io_input_mask:0{(self.io_profile.input_channels + 3) // 4}X}"
                     if has_digital_io

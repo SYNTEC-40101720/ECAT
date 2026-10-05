@@ -176,6 +176,7 @@ class ControlGateway:
                     "type": "control",
                     "command": name,
                     "accepted": False,
+                    "owned": False,
                     "reason": "control is already held",
                 }
             self.control_owner = connection

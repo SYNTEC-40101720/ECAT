@@ -55,14 +55,17 @@ export function WeldingPage({
     }
   }, [snap?.weldingCommandActive, snap?.weldingMode]);
 
-  // 焊机命令心跳
-  useEffect(() => {
-    if (!(snap?.weldingCommandActive)) return;
-    const timer = window.setInterval(() => send("welding_keepalive"), 120);
-    return () => window.clearInterval(timer);
-  }, [snap?.weldingCommandActive, send]);
-
-  const sendCommand = (startWelding = false) => {
+  const sendCommand = (
+    startWelding = false,
+    overrides?: Partial<{
+      robotReady: boolean;
+      gasTest: boolean;
+      wireInch: boolean;
+      wireRetract: boolean;
+      touchEnable: boolean;
+      mode: WeldingMode;
+    }>,
+  ) => {
     const j = intIn(job, 0, 49);
     const c = intIn(currentOrSpeed, 0, 65535);
     const v = intIn(voltageOrStrength, 0, 65535);
@@ -70,18 +73,21 @@ export function WeldingPage({
       setHint("JOB 必须为 0-49 的整数，电流/速度和电压/强度必须为 0-65535 的整数。");
       return false;
     }
+    // overrides 必须直接携带切换后的新值：toggle 的 onChange 同步调用本函数时，
+    // 闭包里捕获的还是切换前的 state，绝不能依赖 setter 后的重渲染。
     send("set_welding_command", {
       startWelding,
-      robotReady,
-      mode: requestedWeldingMode,
-      gasTest,
-      wireInch,
-      wireRetract,
-      touchEnable,
+      robotReady: overrides?.robotReady ?? robotReady,
+      mode: overrides?.mode ?? requestedWeldingMode,
+      gasTest: overrides?.gasTest ?? gasTest,
+      wireInch: overrides?.wireInch ?? wireInch,
+      wireRetract: overrides?.wireRetract ?? wireRetract,
+      touchEnable: overrides?.touchEnable ?? touchEnable,
       job: j,
       currentOrSpeed: c,
       voltageOrStrength: v,
     });
+    setHint("");
     return true;
   };
 
@@ -155,22 +161,7 @@ export function WeldingPage({
                   onClick={() => {
                     onRequestWeldingMode(item.mode);
                     // 立即用新模式发送一次参数命令
-                    const j = intIn(job, 0, 49);
-                    const c = intIn(currentOrSpeed, 0, 65535);
-                    const v = intIn(voltageOrStrength, 0, 65535);
-                    if (j === null || c === null || v === null) return;
-                    send("set_welding_command", {
-                      startWelding: false,
-                      robotReady,
-                      mode: item.mode,
-                      gasTest,
-                      wireInch,
-                      wireRetract,
-                      touchEnable,
-                      job: j,
-                      currentOrSpeed: c,
-                      voltageOrStrength: v,
-                    });
+                    sendCommand(false, { mode: item.mode });
                   }}
                 >
                   <b>{item.label}</b>
@@ -182,13 +173,13 @@ export function WeldingPage({
             <div className="welding-toggle-grid">
               {(
                 [
-                  ["weldingRobotReady", robotReady, setRobotReady, "机器人准备"],
-                  ["weldingGasTest", gasTest, setGasTest, "气体检测"],
-                  ["weldingWireInch", wireInch, setWireInch, "点动送丝"],
-                  ["weldingWireRetract", wireRetract, setWireRetract, "反抽送丝"],
-                  ["weldingTouchEnable", touchEnable, setTouchEnable, "寻位使能"],
+                  ["weldingRobotReady", "robotReady", robotReady, setRobotReady, "机器人准备"],
+                  ["weldingGasTest", "gasTest", gasTest, setGasTest, "气体检测"],
+                  ["weldingWireInch", "wireInch", wireInch, setWireInch, "点动送丝"],
+                  ["weldingWireRetract", "wireRetract", wireRetract, setWireRetract, "反抽送丝"],
+                  ["weldingTouchEnable", "touchEnable", touchEnable, setTouchEnable, "寻位使能"],
                 ] as const
-              ).map(([id, value, setter, label]) => (
+              ).map(([id, field, value, setter, label]) => (
                 <label key={id} className="welding-toggle">
                   <input
                     type="checkbox"
@@ -196,8 +187,8 @@ export function WeldingPage({
                     disabled={!canControl || weldingInProgress}
                     onChange={(e) => {
                       setter(e.target.checked);
-                      // 先更新状态再整体重发参数命令
-                      setTimeout(() => sendCommand(false), 0);
+                      // 立即携带新值整体重发参数命令
+                      sendCommand(false, { [field]: e.target.checked });
                     }}
                   />
                   <span>{label}</span>

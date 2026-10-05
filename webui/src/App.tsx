@@ -1,5 +1,5 @@
 // 骨架层：侧边栏导航 + 顶栏状态 + 视图路由 + 安全网（blur/unload/hidden 停止）。
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useEventStream } from "./api/client";
 import type { Snapshot, WeldingMode } from "./api/types";
 import { DrivePage } from "./features/DrivePage";
@@ -81,6 +81,34 @@ export function App() {
     if (!conn.lastError) return;
     setAdapterError(conn.lastError);
   }, [conn.lastError]);
+
+  // 运动心跳提升到 App 层：keepalive 定时器随页面卸载而消失，任何导航
+  // 切页都会停发心跳、触发 350ms 服务端看门狗中止进行中的运动（与旧
+  // app.js 的全局心跳一致）。依赖数组只含布尔字段，不含 snap 对象本身，
+  // 避免每个 200ms 快照重建 interval 抖动 120ms 节拍。
+  const snapRef = useRef(snap);
+  snapRef.current = snap;
+  const ppMoving = snap?.motionMode === "pp" && snap.ppMoving;
+  const homingActive = snap?.motionMode === "hm" && snap.homingActive;
+  const cspMoving = snap?.motionMode === "csp" && snap.cspMoving;
+  useEffect(() => {
+    if (!ppMoving && !homingActive && !cspMoving) return;
+    const timer = window.setInterval(() => {
+      const s = snapRef.current;
+      if (s?.motionMode === "pp" && s.ppMoving) send("pp_keepalive");
+      else if (s?.motionMode === "hm" && s.homingActive) send("homing_keepalive");
+      else if (s?.motionMode === "csp" && s.cspMoving) send("csp_keepalive");
+    }, 120);
+    return () => window.clearInterval(timer);
+  }, [ppMoving, homingActive, cspMoving, send]);
+
+  // 焊机命令心跳同理提升到 App 层
+  const weldingCommandActive = Boolean(snap?.weldingCommandActive);
+  useEffect(() => {
+    if (!weldingCommandActive) return;
+    const timer = window.setInterval(() => send("welding_keepalive"), 120);
+    return () => window.clearInterval(timer);
+  }, [weldingCommandActive, send]);
 
   // 视图可用性：默认跳到第一个可用视图
   useEffect(() => {
@@ -232,6 +260,9 @@ export function App() {
         </header>
 
         <main className="content">
+          {conn.lastError && (
+            <p className="hint hint-error" role="alert">{conn.lastError}</p>
+          )}
           {activeView === "drive" && (
             <DrivePage
               snap={snap}

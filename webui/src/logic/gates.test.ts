@@ -54,8 +54,8 @@ function snapshot(overrides: Partial<Snapshot> = {}): Snapshot {
     mode: 0,
     wkc: 3,
     expectedWkc: 3,
-    ioInputMask: 0,
-    ioOutputMask: 0,
+    ioInputMask: "0",
+    ioOutputMask: "0",
     ioInputMaskHex: "0x0000",
     ioOutputMaskHex: "0x0000",
     ioInputChannels: 0,
@@ -176,13 +176,14 @@ describe("computeGates", () => {
     expect(gates.mode).toBe("csp");
   });
 
-  it("焊机起焊要求 robotReady 且无电源故障", () => {
+  it("焊机起焊要求 robotReady、通信就绪、无故障码且无电源故障", () => {
     const welding = snapshot({
       hasDrive: false,
       deviceType: "welding",
       hasWelding: true,
       weldingConnected: true,
       weldingRobotReady: true,
+      weldingCommunicationReady: true,
     });
     expect(computeGates(welding, true, "pv").canStartWelding).toBe(true);
     expect(
@@ -193,6 +194,31 @@ describe("computeGates", () => {
       computeGates(snapshot({ ...welding, weldingRobotReady: false }), true, "pv")
         .canStartWelding,
     ).toBe(false);
+    // 后端 _ensure_welding_start_allowed_locked 同样拒绝通信未就绪与故障码非零
+    expect(
+      computeGates(snapshot({ ...welding, weldingCommunicationReady: false }), true, "pv")
+        .canStartWelding,
+    ).toBe(false);
+    expect(
+      computeGates(snapshot({ ...welding, weldingFaultCode: 5 }), true, "pv")
+        .canStartWelding,
+    ).toBe(false);
+  });
+
+  it("模式切换在运动中、焊机命令活动或数字输出非零时禁止", () => {
+    expect(computeGates(snapshot(), true, "pv").canSwitchMode).toBe(true);
+    expect(
+      computeGates(snapshot({ velocityCommand: 500 }), true, "pv").canSwitchMode,
+    ).toBe(false);
+    expect(
+      computeGates(snapshot({ weldingCommandActive: true }), true, "pv").canSwitchMode,
+    ).toBe(false);
+    expect(
+      computeGates(snapshot({ ioOutputMask: "4" }), true, "pv").canSwitchMode,
+    ).toBe(false);
+    expect(
+      computeGates(snapshot({ ioOutputMask: "0" }), true, "pv").canSwitchMode,
+    ).toBe(true);
   });
 });
 

@@ -519,8 +519,9 @@ def test_remote_io_reads_inputs_and_writes_output_bits(
     assert runtime.io_cycle() == 3
     assert bytes(process_slave.output) == b"\x01\x80"
     assert runtime.read_io_inputs() == 0x8005
-    assert runtime.snapshot()["ioInputMask"] == 0x8005
-    assert runtime.snapshot()["ioOutputMask"] == 0x8001
+    # 掩码以字符串传输（64 通道总线超出 float64 精确范围）
+    assert runtime.snapshot()["ioInputMask"] == str(0x8005)
+    assert runtime.snapshot()["ioOutputMask"] == str(0x8001)
 
     runtime.stop_motion()
     assert runtime.io_output_mask == 0

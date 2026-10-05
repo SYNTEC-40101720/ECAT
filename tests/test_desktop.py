@@ -172,6 +172,7 @@ def test_only_one_client_can_acquire_control_and_observers_cannot_command():
         "type": "control",
         "command": "acquire_control",
         "accepted": False,
+        "owned": False,
         "reason": "control is already held",
     }
     with pytest.raises(ValueError, match="control ownership required"):

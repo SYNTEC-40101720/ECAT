@@ -28,11 +28,13 @@ interface DrivePageProps {
 }
 
 export function DrivePage({ snap, gates, onSwitchMode, send }: DrivePageProps) {
-  const [velocity, setVelocity] = useState(1000);
+  // 运动数值输入允许空态（null）：清空输入框 ≠ 目标 0，防止误点执行定位
+  // 触发一次到绝对零位的运动。
+  const [velocity, setVelocity] = useState<number | null>(1000);
   const [accel, setAccel] = useState(0.5);
   const [decel, setDecel] = useState(0.5);
-  const [ppTarget, setPpTarget] = useState(1000);
-  const [ppVelocity, setPpVelocity] = useState(1000);
+  const [ppTarget, setPpTarget] = useState<number | null>(1000);
+  const [ppVelocity, setPpVelocity] = useState<number | null>(1000);
   const [ppAccel, setPpAccel] = useState(0.5);
   const [ppDecel, setPpDecel] = useState(0.5);
   const [ppRelative, setPpRelative] = useState(false);
@@ -41,7 +43,7 @@ export function DrivePage({ snap, gates, onSwitchMode, send }: DrivePageProps) {
   const [hmFast, setHmFast] = useState(500);
   const [hmSlow, setHmSlow] = useState(100);
   const [hmAccelTime, setHmAccelTime] = useState(0.5);
-  const [cspTarget, setCspTarget] = useState(1000);
+  const [cspTarget, setCspTarget] = useState<number | null>(1000);
   const [cspDuration, setCspDuration] = useState(1);
   const [hintError, setHintError] = useState("");
 
@@ -56,6 +58,11 @@ export function DrivePage({ snap, gates, onSwitchMode, send }: DrivePageProps) {
   // Jog 心跳：按住期间 120ms 重复发送（与旧实现一致）
   const startJog = (sign: number) => {
     if (!gates.canJog) return;
+    if (velocity === null) {
+      setHintError("请先输入目标速度。");
+      return;
+    }
+    setHintError("");
     const v = sign * Math.min(MAX_VELOCITY, Math.max(1, Math.abs(velocity) || 1));
     send("jog", { velocity: v });
     if (!jogActive.current) {
@@ -98,32 +105,22 @@ export function DrivePage({ snap, gates, onSwitchMode, send }: DrivePageProps) {
     };
   }, []);
 
-  // 运动心跳：PP/HM/CSP 活动期间维持 keepalive
-  useEffect(() => {
-    const moving =
-      snap?.motionMode === "pp" && snap.ppMoving ||
-      snap?.motionMode === "hm" && snap.homingActive ||
-      snap?.motionMode === "csp" && snap.cspMoving;
-    if (!moving) return;
-    const timer = window.setInterval(() => {
-      if (snap?.motionMode === "pp" && snap.ppMoving) send("pp_keepalive");
-      else if (snap?.motionMode === "hm" && snap.homingActive) send("homing_keepalive");
-      else if (snap?.motionMode === "csp" && snap.cspMoving) send("csp_keepalive");
-    }, 120);
-    return () => window.clearInterval(timer);
-  }, [snap?.motionMode, snap?.ppMoving, snap?.homingActive, snap?.cspMoving, send, snap]);
-
-  const integerInput = (value: number): number | null =>
-    Number.isSafeInteger(value) ? value : null;
+  const integerInput = (value: number | null): number | null =>
+    value === null ? null : Number.isSafeInteger(value) ? value : null;
 
   const movePp = () => {
     if (!gates.canMovePp) return;
+    if (ppTarget === null || ppVelocity === null) {
+      setHintError("请输入目标位置和轮廓速度。");
+      return;
+    }
     const t = integerInput(ppTarget);
     const v = integerInput(ppVelocity);
     if (t === null || v === null) {
       setHintError("位置和速度必须是整数。");
       return;
     }
+    setHintError("");
     send("move_pp", {
       targetPosition: t,
       velocity: v,
@@ -139,6 +136,7 @@ export function DrivePage({ snap, gates, onSwitchMode, send }: DrivePageProps) {
       setHintError("回零方法、速度和偏置必须是有效整数。");
       return;
     }
+    setHintError("");
     send("start_homing", {
       method: hmMethod,
       fastVelocity: hmFast,
@@ -150,11 +148,16 @@ export function DrivePage({ snap, gates, onSwitchMode, send }: DrivePageProps) {
 
   const moveCsp = () => {
     if (!gates.canMoveCsp) return;
+    if (cspTarget === null) {
+      setHintError("请输入目标位置。");
+      return;
+    }
     const t = integerInput(cspTarget);
     if (t === null || !Number.isFinite(cspDuration)) {
       setHintError("目标位置必须是整数，变化时间必须有效。");
       return;
     }
+    setHintError("");
     send("move_csp", { targetPosition: t, duration: cspDuration });
   };
 
@@ -239,7 +242,7 @@ export function DrivePage({ snap, gates, onSwitchMode, send }: DrivePageProps) {
               <label className="field-label">目标速度（驱动单位）</label>
               <input
                 className="text-input" type="number" min={1} max={MAX_VELOCITY}
-                value={velocity} onChange={(e) => setVelocity(Number(e.target.value))}
+                value={velocity ?? ""} onChange={(e) => setVelocity(e.target.value === "" ? null : Number(e.target.value))}
               />
               <div className="field-2">
                 <div>
@@ -260,7 +263,7 @@ export function DrivePage({ snap, gates, onSwitchMode, send }: DrivePageProps) {
             <div id="ppSettings" className="mode-settings" hidden={mode !== "pp" || !modeAvailable}>
               <label className="field-label">轮廓速度（驱动单位）</label>
               <input className="text-input" type="number" min={1} max={MAX_VELOCITY} step={1}
-                value={ppVelocity} onChange={(e) => setPpVelocity(Number(e.target.value))} />
+                value={ppVelocity ?? ""} onChange={(e) => setPpVelocity(e.target.value === "" ? null : Number(e.target.value))} />
               <div className="field-2">
                 <div>
                   <label className="field-label">加速时间（秒）</label>
@@ -369,7 +372,7 @@ export function DrivePage({ snap, gates, onSwitchMode, send }: DrivePageProps) {
               <div className="pp-target-field">
                 <label className="field-label">目标位置（驱动脉冲）</label>
                 <input className="text-input" type="number" min={-MAX_POSITION} max={MAX_POSITION} step={1}
-                  value={ppTarget} onChange={(e) => setPpTarget(Number(e.target.value))} />
+                  value={ppTarget ?? ""} onChange={(e) => setPpTarget(e.target.value === "" ? null : Number(e.target.value))} />
               </div>
               <div className="position-mode" role="group" aria-label="位置类型">
                 <label className="position-option">
@@ -424,7 +427,7 @@ export function DrivePage({ snap, gates, onSwitchMode, send }: DrivePageProps) {
               <div className="pp-target-field">
                 <label className="field-label">目标位置（驱动脉冲）</label>
                 <input className="text-input" type="number" min={-MAX_POSITION} max={MAX_POSITION} step={1}
-                  value={cspTarget} onChange={(e) => setCspTarget(Number(e.target.value))} />
+                  value={cspTarget ?? ""} onChange={(e) => setCspTarget(e.target.value === "" ? null : Number(e.target.value))} />
               </div>
               <div className="pp-action-row">
                 <div className="position-readout">

@@ -73,6 +73,12 @@ export function useEventStream(
             break;
           case "control":
             setHasControl(message.owned === true);
+            // 控制权释放后重新申请：持有者断开时服务器广播
+            // available:true，此时本客户端应立即重新 acquire，否则所有
+            // 控件会一直禁用到手动刷新页面。
+            if (message.available === true && message.owned !== true) {
+              socket.send(JSON.stringify({ command: "acquire_control" }));
+            }
             break;
           case "error":
             setLastError(message.error);

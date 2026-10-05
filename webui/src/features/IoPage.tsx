@@ -1,4 +1,5 @@
 // 数字 I/O 页：DI 监视 + DO 开关（通道控件按 snapshot 动态生成）。
+import { useEffect, useRef } from "react";
 import type { Snapshot } from "../api/types";
 import { channelRange, maskToHex } from "../logic/gates";
 
@@ -15,10 +16,31 @@ export function IoPage({ snap, send }: IoPageProps) {
   const outputChannels = Math.max(0, snap?.ioOutputChannels ?? 0);
   const outputEnabled = hasDigitalIo && ioConnected && snap?.state !== "ERROR";
   const deviceName = snap?.ioDevice || snap?.device || "数字 I/O";
-  const inputMaskHex = maskToHex(snap?.ioInputMaskHex ?? snap?.ioInputMask ?? 0, inputChannels);
-  const outputMaskHex = maskToHex(snap?.ioOutputMaskHex ?? snap?.ioOutputMask ?? 0, outputChannels);
-  const inputMask = BigInt(snap?.ioInputMask ?? 0);
-  const outputMask = BigInt(snap?.ioOutputMask ?? 0);
+  // 掩码优先取后端的十六进制字符串：64 通道总线的掩码超出 float64 精确
+  // 范围，经 JSON number 会丢失低位（DI 00 会显示错误）。
+  const inputMaskHex = maskToHex(snap?.ioInputMaskHex ?? "0", inputChannels);
+  const outputMaskHex = maskToHex(snap?.ioOutputMaskHex ?? "0", outputChannels);
+  const inputMask = BigInt(snap?.ioInputMaskHex ?? snap?.ioInputMask ?? 0);
+  const outputMask = BigInt(snap?.ioOutputMaskHex ?? snap?.ioOutputMask ?? 0);
+
+  // DO 乐观 pending：服务器掩码滞后用户操作最多一个快照周期（200ms），
+  // 期间快照渲染会把刚点开的复选框弹回旧值，下一次点击就会把同一个值
+  // 再发一遍。pending 在服务器回显追上后清除。
+  const pendingRef = useRef<Map<number, boolean>>(new Map());
+  const lastMaskRef = useRef<bigint | null>(null);
+  useEffect(() => {
+    if (lastMaskRef.current !== outputMask) {
+      // 掩码变化：清除已被服务器确认的 pending 位
+      for (const [channel, value] of pendingRef.current) {
+        if (((outputMask >> BigInt(channel)) & 1n) === (value ? 1n : 0n)) {
+          pendingRef.current.delete(channel);
+        }
+      }
+      lastMaskRef.current = outputMask;
+    }
+    if (snap?.state === "ERROR") pendingRef.current.clear();
+  }, [outputMask, snap?.state]);
+  useEffect(() => () => pendingRef.current.clear(), []);
 
   return (
     <section className="page io-page" aria-labelledby="ioPageTitle">
@@ -86,7 +108,9 @@ export function IoPage({ snap, send }: IoPageProps) {
           <div className="card-body">
             <div className="io-channel-grid" aria-label={`${outputChannels} 路数字输出`}>
               {Array.from({ length: outputChannels }, (_, channel) => {
-                const checked = ((outputMask >> BigInt(channel)) & 1n) === 1n;
+                const serverChecked = ((outputMask >> BigInt(channel)) & 1n) === 1n;
+                const pending = pendingRef.current.get(channel);
+                const checked = pending === undefined ? serverChecked : pending;
                 return (
                   <label key={channel} className="io-channel io-output-channel"
                     aria-label={`DO ${String(channel).padStart(2, "0")}`}>
@@ -98,9 +122,10 @@ export function IoPage({ snap, send }: IoPageProps) {
                         className="io-output-input"
                         checked={checked}
                         disabled={!outputEnabled}
-                        onChange={(e) =>
-                          send("set_output", { channel, enabled: e.target.checked })
-                        }
+                        onChange={(e) => {
+                          pendingRef.current.set(channel, e.target.checked);
+                          send("set_output", { channel, enabled: e.target.checked });
+                        }}
                       />
                       <span className="io-output-track" aria-hidden="true" />
                     </span>

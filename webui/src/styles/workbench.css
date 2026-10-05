@@ -423,6 +423,7 @@ body {
 .mono { font-family: var(--mono); }
 .hint { font-size: 12px; color: var(--text-muted); margin: 0; }
 .hint.center { text-align: center; }
+.hint-error { color: var(--danger); font-weight: 600; padding: 4px 12px; }
 .muted { color: var(--text-muted); }
 code {
   background: var(--surface-2); padding: 1px 6px; border-radius: 4px;
