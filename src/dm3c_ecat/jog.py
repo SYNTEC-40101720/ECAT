@@ -131,7 +131,7 @@ def main() -> int:
         slave.sdo_write(0x6060, 0, profile.mode.to_bytes(1, "little", signed=True))
 
         io_map_size = master.config_overlap_map()
-        expected_tx_bytes = profile.profile_tx_bytes
+        expected_tx_bytes = profile.tx_bytes
         status_offset = 2
         if profile.required_feedback_roles:
             # Field-driven feedback validation: the drive-reported TxPDO layout

@@ -880,7 +880,6 @@ class Runtime:
             return
         try:
             validate_wkc = False
-            pure_io = False
             if self.profile is not None and self._drive_device() is not None:
                 controlword = 0x0006 if disable_drive else 0x000F
                 self.wkc = self.cycle(controlword, 0)
@@ -891,11 +890,10 @@ class Runtime:
             elif self.io_profile is not None and self._io_device() is not None:
                 self.wkc = self.io_cycle()
                 validate_wkc = True
-                pure_io = True
             if (
                 validate_wkc
                 and self.expected_wkc > 0
-                and not self._process_wkc_is_valid(pure_io=pure_io)
+                and not self._process_wkc_is_valid()
             ):
                 raise RuntimeError(
                     f"safe process-data WKC mismatch: {self.wkc}/{self.expected_wkc}"
@@ -1415,9 +1413,13 @@ class Runtime:
             raise RuntimeError("drive profile is not available")
         self.drive_feedback_mapping = ()
         self.drive_tx_layout = ()
-        self.drive_tx_bytes = self.profile.profile_tx_bytes
+        self.drive_tx_bytes = self.profile.tx_bytes
         if not self.profile.feedback_pdo_layouts and not self.profile.required_feedback_roles:
-            return
+            raise RuntimeError(
+                f"{self.profile.name} declares no TxPDO feedback layout; "
+                "the profile must declare feedback_pdo_layouts or "
+                "required_feedback_roles before the drive can be used"
+            )
         drive_slave = self._drive_device()
         if drive_slave is None:
             raise RuntimeError("drive process data is not configured")
@@ -1514,12 +1516,23 @@ class Runtime:
             self._latch_runtime_error(f"TSVB Homing SDO write failed: {exc}")
             raise
 
-    def _process_wkc_is_valid(self, *, pure_io: bool = False) -> bool:
+    def _wkc_policy(self) -> str:
+        """当前过程数据的 WKC 校验策略：strict 或 at_least_one。
+
+        仅当总线上只有允许部分 WKC 的数字 I/O 时放宽为 at_least_one
+        （现场总线半死链与误杀之间取保守值）；驱动/焊机在线时恒为 strict。
+        """
         if (
-            pure_io
+            self.profile is None
+            and self.welding_profile is None
             and self.io_profile is not None
             and self.io_profile.allow_partial_wkc
         ):
+            return "at_least_one"
+        return "strict"
+
+    def _process_wkc_is_valid(self) -> bool:
+        if self._wkc_policy() == "at_least_one":
             return self.wkc > 0
         return self.wkc == self.expected_wkc
 
@@ -1554,10 +1567,11 @@ class Runtime:
             self.message = message
 
     def run_io_loop(self) -> None:
+        partial_since: float | None = None
         while self.running:
             self.wkc = self.io_cycle()
             self.read_io_inputs()
-            if not self._process_wkc_is_valid(pure_io=True):
+            if not self._process_wkc_is_valid():
                 if self.wkc <= 0:
                     message = (
                         f"Digital I/O process-data exchange lost: WKC={self.wkc}"
@@ -1565,14 +1579,27 @@ class Runtime:
                     self._latch_runtime_error(message)
                     LOGGER.error(message)
                     return
+                # partial WKC：保持 OPERATIONAL 不误杀，但持续超过 10s
+                # 在 message 上给出可见的降级提示（现场半死链排查线索）。
+                now = time.monotonic()
+                if partial_since is None:
+                    partial_since = now
+                elif now - partial_since > 10.0 and self.state != "ERROR":
+                    with self.lock:
+                        self.message = (
+                            f"Digital I/O running; partial WKC degraded "
+                            f"{self.wkc}/{self.expected_wkc}"
+                        )
+                    LOGGER.warning(
+                        "Digital I/O partial WKC degraded: %s/%s",
+                        self.wkc,
+                        self.expected_wkc,
+                    )
                 with self.lock:
                     if self.state != "ERROR":
                         self.state = "OPERATIONAL"
-                        self.message = (
-                            f"Digital I/O running; partial WKC "
-                            f"{self.wkc}/{self.expected_wkc}"
-                        )
             else:
+                partial_since = None
                 with self.lock:
                     if self.state != "ERROR":
                         self.state = "OPERATIONAL"
@@ -2085,12 +2112,11 @@ class Runtime:
             if actual_position is not None:
                 self.actual_position = actual_position
             return
-        if len(data) >= 5:
-            self.error = int.from_bytes(data[0:2], "little")
-            self.statusword = int.from_bytes(data[2:4], "little")
-            self.mode = struct.unpack_from("<b", data, 4)[0]
-        if len(data) >= 9:
-            self.actual_position = struct.unpack_from("<i", data, 5)[0]
+        # 无映射时不再按固定偏移盲解：configure 之后映射为空只可能是
+        # profile 声明缺失或解析被跳过，盲解会把配置错误伪装成正常反馈。
+        raise RuntimeError(
+            f"drive feedback mapping is not configured for {self.profile.name if self.profile else 'drive'}"
+        )
 
     @staticmethod
     def _mapped_feedback_value(

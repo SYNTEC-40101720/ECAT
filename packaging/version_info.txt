@@ -15,7 +15,7 @@ VSVersionInfo(
       StringTable(
         u'000004B0',
         [StringStruct(u'CompanyName', u'SYNTEC'),
-        StringStruct(u'FileDescription', u'SYNTEC ECAT Test WebSocket Backend'),
+        StringStruct(u'FileDescription', u'SYNTEC ECAT Test Desktop'),
         StringStruct(u'FileVersion', u'1.0.0.0'),
         StringStruct(u'ProductName', u'SYNTEC-ECAT-Test'),
         StringStruct(u'ProductVersion', u'1.0.0.0'),

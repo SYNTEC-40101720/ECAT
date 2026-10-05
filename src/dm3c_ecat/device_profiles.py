@@ -133,13 +133,7 @@ class DriveProfile:
 
     @property
     def io_map_bytes(self) -> int:
-        return self.rx_bytes + self.profile_tx_bytes
-
-    @property
-    def profile_tx_bytes(self) -> int:
-        # Declared TxPDO size from profile; runtime may override with the actual
-        # byte count read from the drive when required_feedback_roles is used.
-        return self.tx_bytes
+        return self.rx_bytes + self.tx_bytes
 
     def mode_pdo(self, mode: str) -> ModePdo | None:
         return next((item for item in self.mode_pdos if item.mode == mode), None)

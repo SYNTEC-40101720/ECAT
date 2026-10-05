@@ -222,6 +222,9 @@ def test_mode_switch_sends_zero_frame_and_requires_strict_wkc(runtime):
     runtime._identify_slaves = MagicMock()
     runtime._read_mode_capabilities = MagicMock()
     runtime.configure_process_data = MagicMock()
+    # 测试焦点是零帧序列与 WKC 严格性；feedback 走真实解码需要完整
+    # TxPDO 映射装配，与本测试无关。
+    runtime.feedback = MagicMock()
 
     runtime.switch_mode(hmi.MODE_PP)
 
@@ -554,20 +557,29 @@ def test_remote_io_rejects_invalid_output_channel(runtime):
 
 
 def test_partial_wkc_is_only_allowed_for_devices_with_flag(runtime):
+    """WKC 策略由总线构成决定：仅纯 I/O 且 profile 允许时才放宽。"""
     runtime.expected_wkc = 3
     runtime.wkc = 1
 
-    # HAU TO and Solidot both have allow_partial_wkc=True
+    # 纯 I/O 总线 + allow_partial_wkc=True（HAU TO / Solidot）：at_least_one
     runtime.io_profile = REMOTE_IO_PROFILES[0]
-    assert runtime._process_wkc_is_valid(pure_io=True) is True
-    assert runtime._process_wkc_is_valid() is False
+    assert runtime._wkc_policy() == "at_least_one"
+    assert runtime._process_wkc_is_valid() is True
 
     runtime.io_profile = REMOTE_IO_PROFILES[2]
-    assert runtime._process_wkc_is_valid(pure_io=True) is True
+    assert runtime._wkc_policy() == "at_least_one"
+    assert runtime._process_wkc_is_valid() is True
 
-    # DECOWELL does not allow partial WKC
+    # DECOWELL 不允许 partial WKC：严格
     runtime.io_profile = REMOTE_IO_PROFILES[1]
-    assert runtime._process_wkc_is_valid(pure_io=True) is False
+    assert runtime._wkc_policy() == "strict"
+    assert runtime._process_wkc_is_valid() is False
+
+    # 混合总线上即使 I/O 允许 partial，驱动在线也必须严格
+    runtime.io_profile = REMOTE_IO_PROFILES[0]
+    runtime.profile = DRIVE_PROFILES[0]
+    assert runtime._wkc_policy() == "strict"
+    assert runtime._process_wkc_is_valid() is False
 
 
 def test_decowell_io_initializes_modules_before_mapping(runtime):
@@ -868,3 +880,44 @@ def test_runtime_thread_stops_after_cycle_exception(runtime):
     assert runtime.state == "ERROR"
     assert "cycle aborted" in runtime.message
     runtime.master.close.assert_called_once_with()
+
+def test_configure_rejects_profile_without_feedback_declaration(runtime):
+    """profile 未声明任何反馈布局时 configure 必须失败而非静默跳过。
+
+    旧实现 _resolve_drive_feedback_mapping 对空声明静默 return，随后
+    feedback() 走固定偏移盲解，把配置错误伪装成正常反馈。空声明现在
+    在 configure 时即 raise，消息指明需要声明哪个字段。
+    """
+    from dm3c_ecat.device_profiles import DriveProfile
+
+    bare_profile = DriveProfile(
+        name="Bare Drive",
+        vendor=0x1111,
+        product=0x2222,
+        rx_pdo=0x1600,
+        tx_pdo=0x1A00,
+        rx_bytes=6,
+        tx_bytes=8,
+        feedback_pdo_layouts=(),
+        required_feedback_roles=(),
+    )
+    drive = MagicMock()
+    drive.output = bytearray(6)
+    drive.input = bytearray(8)
+    runtime.profile = bare_profile
+    runtime.drive_slave = drive
+
+    with pytest.raises(RuntimeError, match="feedback_pdo_layouts"):
+        runtime._resolve_drive_feedback_mapping()
+
+
+def test_feedback_raises_without_mapping(runtime):
+    """映射为空时 feedback 不再按固定偏移盲解。"""
+    drive = MagicMock()
+    drive.input = bytearray(12)
+    runtime.drive_slave = drive
+    runtime.profile = DRIVE_PROFILES[0]
+    runtime.drive_feedback_mapping = ()
+
+    with pytest.raises(RuntimeError, match="mapping is not configured"):
+        runtime.feedback()

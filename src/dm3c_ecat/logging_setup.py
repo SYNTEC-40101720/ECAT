@@ -1,11 +1,20 @@
 from __future__ import annotations
 
 import logging
+import os
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 LOGGER_NAME = "ecat_test"
-DEFAULT_LOG_FILE = Path.cwd() / "logs" / "ecat-test.log"
+# cwd 相关路径在打包窗口态下指向不可写目录（Program Files 等）时，日志
+# 会静默死亡（RotatingFileHandler 在 configure 时就抛 PermissionError，
+# 或延迟到第一条记录时崩溃）。固定到用户可写的 %LOCALAPPDATA%。
+DEFAULT_LOG_FILE = (
+    Path(os.environ.get("LOCALAPPDATA", str(Path.home())))
+    / "SYNTEC-ECAT-Test"
+    / "logs"
+    / "ecat-test.log"
+)
 
 
 def configure_logging(log_file: str | Path = DEFAULT_LOG_FILE) -> Path:

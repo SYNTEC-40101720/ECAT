@@ -287,7 +287,6 @@ def main() -> int:
             supported_profile = supported_profile or get_remote_io_profile(
                 slave.man,
                 slave.id,
-                revision,
             )
             supported_profile = supported_profile or get_welding_profile(slave.man, slave.id)
             expected_input_size = (

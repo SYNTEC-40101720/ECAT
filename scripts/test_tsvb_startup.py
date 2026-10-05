@@ -40,10 +40,13 @@ def main() -> int:
             runtime.wkc = runtime.cycle(0x0006, 0)
             runtime.feedback()
             time.sleep(0.01)
+        # 5 个周期后再取一次快照：上面的 snapshot 是 configure 时的旧值，
+        # statusword/errorCode/actualPosition 全是那之后的反馈。
+        snapshot = runtime.snapshot()
         print(
             f"[OK] after 5 cycles: statusword={snapshot['statusword']} "
-            f"error={snapshot['errorCode']} mode={runtime.mode} "
-            f"position={runtime.actual_position} wkc={runtime.wkc}"
+            f"error={snapshot['errorCode']} mode={snapshot['mode']} "
+            f"position={snapshot['actualPosition']} wkc={snapshot['wkc']}"
         )
         print("[OK] TSVB-EA startup validation passed")
         return 0
