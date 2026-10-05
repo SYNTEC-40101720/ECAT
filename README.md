@@ -9,7 +9,7 @@
 `webui/`（React + TypeScript + Vite）编译产物，窗口由系统 WebView2 渲染，
 不随包携带 Chromium。替代原 Electron 双进程方案：
 
-- `ecat-desktop`：桌面入口（`src/dm3c_ecat/desktop/cli.py`）；`--no-window` 为无头/浏览器态
+- `ecat-desktop`：桌面入口（`src/dm3c_ecat/desktop/cli.py`，也可 `py -m dm3c_ecat`）；`--no-window` 为无头/浏览器态
 - 启动器 `src/dm3c_ecat/desktop/launcher.py`：随机回环端口、一次性令牌注入启动 URL、
   `/api/v1/system/health` 就绪探活、窗口关闭 → Runtime 安全停止 → uvicorn 退出
 - WS 端点 `/api/v1/events`：快照/日志广播（0.2s 周期）、单控制客户端所有权、
@@ -18,7 +18,7 @@
 - 安全门控纯函数集中在 `webui/src/logic/gates.ts`（canEnable/canJog/canMovePp 等）
 
 开发态：终端 1 `uvicorn`（或 `ecat-desktop --no-window`），终端 2 `cd webui && npm run dev`
-（Vite 5173 热更新）。桌面态发布验证：`py -m dm3c_ecat.desktop.cli`。
+（Vite 5173 热更新）。桌面态发布验证：`py -m dm3c_ecat`。
 
 ## 安装
 
@@ -39,7 +39,7 @@ PDO/OP 配置、使能序列、Jog、心跳看门狗、WKC 和异常堆栈。
 ```powershell
 py -m pip install --editable .
 cd webui && npm install && npm run build && cd ..
-py -m dm3c_ecat.desktop.cli
+py -m dm3c_ecat
 ```
 
 免安装直接启动（源码 checkout 未 `pip install` 时）：`py main.py`，
@@ -52,7 +52,7 @@ py -m dm3c_ecat.desktop.cli
 显式指定 EtherCAT 网卡：
 
 ```powershell
-py -m dm3c_ecat.desktop.cli --interface "\Device\NPF_{网卡 GUID}"
+py -m dm3c_ecat --interface "\Device\NPF_{网卡 GUID}"
 ```
 
 `--interface` 和环境变量 `ECAT_INTERFACE` 都会覆盖自动探测；显式接口无效时会在运行状态中报告错误。
@@ -215,7 +215,7 @@ ESI 文件用于描述设备，不会被 `pysoem` 自动从 `ESI/` 目录加载�
 
 ```powershell
 $env:ECAT_INTERFACE = '\Device\NPF_{网卡 GUID}'
-py -m dm3c_ecat.desktop.cli
+py -m dm3c_ecat
 ```
 
 ## 文件说明

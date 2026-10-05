@@ -37,7 +37,9 @@ def _static_dir() -> Path | None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="SYNTEC ECAT Test desktop HMI")
+    parser = argparse.ArgumentParser(
+        prog="ecat-desktop", description="SYNTEC ECAT Test desktop HMI"
+    )
     parser.add_argument("--version", action="version", version=APP_VERSION)
     parser.add_argument("--interface", help="EtherCAT adapter (overrides ECAT_INTERFACE)")
     parser.add_argument("--log-file", default=str(DEFAULT_LOG_FILE))
