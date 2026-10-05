@@ -1,3 +1,22 @@
+## L9.1 发布产物补验与打包冒烟（2026-10-05）
+
+- 五批审查修复（6858c28..c14ecf2）后补跑完整发布链路：`scripts/build-release.ps1`
+  （npm build + PyInstaller 6.22.0，与 `packaging/requirements-build.txt` pin 一致）
+  一次通过，产物约 17.9 MB；`scripts/validate-release.ps1` 首次对真实产物执行，
+  `_internal` 结构与 EXE 元数据全部通过。
+- 打包产物 headless 冒烟通过：`--no-window` + `ECAT_PORT`/`ECAT_LOCAL_TOKEN`/
+  `ECAT_ALLOW_SECOND_INSTANCE` 注入 → `/health` 200（无网卡时 WAITING_INTERFACE）、
+  静态 index 送达、WS `/api/v1/events` 令牌鉴权通过、shutdown 干净退出 exit 0、
+  无残留进程。`scripts/test_tsvb_startup.py` 在无网卡本机按设计返回 exit 2。
+- **自动化驱动打包 exe 的进程模型坑（记录在案）**：PyInstaller windowed exe 经
+  `subprocess.Popen` 启动时，返回的 pid 是引导进程，真实应用进程（uvicorn 监听者）
+  是其子进程——`proc.kill()` 只杀引导进程会留下孤儿监听进程，后续冒烟的探活与
+  403 会被残留进程冒名应答。测试脚本须按进程家族（exe pid + 其子进程）校验端口
+  归属并清理。用户窗口路径（关窗 → 优雅退出链）不受影响。冒烟脚本
+  `build/smoke_packaged.py` 未入库（build/ 被 .gitignore），可按此节描述重建。
+- 仍未验证（实机边界）：真实 EtherCAT 网卡/TSVB-EA 驱动在网的完整启动与操作、
+  域控安装验收。
+
 ## L6 CSP 软件保护（2026-08-26）
 
 - CSP 提交前验证目标位置、有限且 `0.01..60s` 的持续时间，以及由位移/持续时间推导
@@ -32,7 +51,7 @@
 	安装包和 packaged GUI 烟雾测试未完成。域控最终安装、签名/白名单和真实设备验收仍待用户。
 # ECAT Test 开发状态
 
-最后更新：2026-10-04
+最后更新：2026-10-05
 
 ## L9 本地 Web 桌面迁移（2026-10-04）
 
